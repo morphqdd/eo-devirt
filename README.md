@@ -9,29 +9,43 @@ transformation has an oracle.
 
 ## Status
 
-Stage 1 of 5: the XMIR codec.
+Stage 2 of 5: name resolution.
 
 - [x] read and write XMIR without losing anything
-- [ ] resolve `Φ.a.b` and `ξ.a` references into a graph
+- [x] resolve `Φ.a.b` and `ξ.a` references, following decorators and packages
 - [ ] inline the dispatches that turn out to be monomorphic
 - [ ] shape analysis for the rest
 - [ ] a native backend
 
-## Why bother
+## Where the dispatch goes
 
-Counted over the 171 XMIR files of `eo-runtime`, of 5231 dispatch steps:
+Measured over the 171 XMIR files of `eo-runtime`, 11997 dispatch steps in all:
 
 | | steps | |
 |---|---|---|
-| first step from `Φ`, a global object | 2039 | static |
-| first step from `ξ`, a lexical binding | 1248 | static |
-| tails after `Φ`, the object is known | 223 | static |
-| **resolvable with no analysis at all** | **3510 (67%)** | |
-| first step on `ρ`, a computed receiver | 506 | needs shape analysis |
-| tails after `ξ`, going through a value | 1215 | needs shape analysis |
+| resolved | 7303 (60.9%) | pinned to an object the program declares |
+| dynamic | 4567 (38.1%) | goes through a value that exists only at run time |
+| unresolved | 127 (1.1%) | named something not found |
 
-Two thirds of all dispatch comes off with plain name resolution. That number is
-a lower bound: part of the remaining third resolves under analysis.
+Reproduce with `cargo run --example resolve <dir-with-xmir>`.
+
+Three fifths of all dispatch comes off with plain name resolution, before any
+analysis of shapes. The dynamic share is what stage 4 has to attack.
+
+What counts as what:
+
+- A step onto `ρ` is dynamic. `ρ` is the object a formation was dispatched
+  from, bound by the `dot` rule at reduction time. It is usually the enclosing
+  formation, but nothing in the program guarantees that, so it is not guessed
+  at here. This is the single largest dynamic group.
+- A step through a void is dynamic, though finding the void itself is not: the
+  binding is exactly where the program says it is, only its value is not.
+- A step past an atom is dynamic. The `atom` attribute on a `λ` binding does
+  declare the shape of the result, which stage 4 should be able to use.
+
+The 1.1% that is neither is not yet explained. The obvious guess, that these are
+dispatches past atoms, is wrong: the rule for that case fires zero times on this
+corpus and moved none of them.
 
 ## The round-trip guarantee
 

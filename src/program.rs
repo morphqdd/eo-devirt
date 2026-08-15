@@ -1,0 +1,325 @@
+//! Resolution of the references an EO program makes.
+//!
+//! Every dispatch in XMIR is written as a chain in the `base` attribute:
+//! `Φ.number.as-i64`, `ξ.x.plus`, `.if`. A chain starting at `Φ` begins at a
+//! global object, one starting at `ξ` at the enclosing formation, and a leading
+//! dot dispatches on a receiver computed at run time.
+
+use crate::xmir::{Element, Xmir};
+
+/// How far the resolver follows decorators before it gives up, so that a cycle
+/// of objects decorating each other cannot spin forever.
+const DEPTH: usize = 32;
+
+/// A whole program: every XMIR document that makes it up.
+pub struct Program {
+    documents: Vec<Xmir>,
+}
+
+/// How much of the program's dispatch was pinned down.
+pub struct Report {
+    resolved: usize,
+    unresolved: usize,
+    dynamic: usize,
+    missing: Vec<String>,
+}
+
+impl From<Vec<Xmir>> for Program {
+    fn from(documents: Vec<Xmir>) -> Self {
+        Self { documents }
+    }
+}
+
+impl Program {
+    /// Resolve every reference the program makes and report on the outcome.
+    pub fn resolve(&self) -> Report {
+        let resolver = Resolver {
+            globals: self
+                .documents
+                .iter()
+                .flat_map(|document| document.root().children.iter())
+                .filter_map(|object| path(object).map(|path| (path, object)))
+                .collect(),
+        };
+        let mut report = Report {
+            resolved: 0,
+            unresolved: 0,
+            dynamic: 0,
+            missing: Vec::new(),
+        };
+        for document in &self.documents {
+            resolver.count(document.root(), Where::Nowhere, &mut report);
+        }
+        report
+    }
+}
+
+impl Report {
+    /// How many dispatch steps were pinned to a known object.
+    pub fn resolved(&self) -> usize {
+        self.resolved
+    }
+
+    /// How many named something the program does not declare at all.
+    pub fn unresolved(&self) -> usize {
+        self.unresolved
+    }
+
+    /// How many go through a value only known at run time, and so are left to
+    /// the shape analysis.
+    pub fn dynamic(&self) -> usize {
+        self.dynamic
+    }
+
+    /// The names it could not find, in the order it met them.
+    pub fn missing(&self) -> &[String] {
+        &self.missing
+    }
+}
+
+/// What one step of a chain cost us.
+enum Score {
+    /// The name was found where the program says it is.
+    Resolved,
+    /// The name sits on a value that only exists at run time.
+    Dynamic,
+    /// The name is nowhere to be found.
+    Unresolved,
+}
+
+/// Where a chain has got to.
+#[derive(Clone, Copy)]
+enum Where<'a> {
+    /// On an object the program declares.
+    At(&'a Element),
+    /// On something whose value only exists at run time: a void, or a receiver
+    /// the program computes. Name resolution stops here; shape analysis picks
+    /// it up.
+    Runtime,
+    /// On a name the program does not declare at all.
+    Nowhere,
+}
+
+/// The objects a program declares at the top level, which is what `Φ` names.
+///
+/// A top-level object carries its full path in `loc`, so an object declared in
+/// a package is known as `string.regex`, not just `regex`.
+struct Resolver<'a> {
+    globals: Vec<(String, &'a Element)>,
+}
+
+impl<'a> Resolver<'a> {
+    /// Walk the tree, resolving the `base` of every element that has one.
+    ///
+    /// `scope` is the formation whose body we are inside, which `ξ` names.
+    fn count(&self, element: &'a Element, scope: Where<'a>, report: &mut Report) {
+        let inner = match attribute(element, "base") {
+            Some(base) => {
+                self.walk(base, scope, report);
+                scope
+            }
+            None => Where::At(element),
+        };
+        for child in &element.children {
+            self.count(child, inner, report);
+        }
+    }
+
+    /// Follow a chain one step at a time, scoring each step by whether it
+    /// landed on an object we know.
+    ///
+    /// A chain that starts with a bare dot dispatches on a receiver computed at
+    /// run time, which no amount of name resolution can pin down, so every one
+    /// of its steps counts as dynamic.
+    fn walk(&self, base: &str, scope: Where<'a>, report: &mut Report) {
+        let mut steps = base.split('.');
+        let mut here = match steps.next() {
+            Some("Φ") => {
+                let rest: Vec<&str> = steps.collect();
+                return self.enter(&rest, report);
+            }
+            Some("ξ") => scope,
+            Some("∅") => Where::Runtime,
+            _ => {
+                report.dynamic += steps.filter(|step| !step.is_empty()).count();
+                return;
+            }
+        };
+        for name in steps {
+            let (score, landing) = self.step(here, name, 0);
+            tally(score, name, report);
+            here = landing;
+        }
+    }
+
+    /// Start a chain at `Φ`, taking as many steps as the longest global path
+    /// that matches, then carrying on inside whatever that object is.
+    fn enter(&self, steps: &[&str], report: &mut Report) {
+        let Some(first) = steps.first() else { return };
+        let taken = self.longest(steps);
+        let mut here = match taken {
+            0 => {
+                tally(Score::Unresolved, first, report);
+                Where::Nowhere
+            }
+            taken => {
+                for name in &steps[..taken] {
+                    tally(Score::Resolved, name, report);
+                }
+                self.global(&steps[..taken].join("."))
+            }
+        };
+        let rest = if taken == 0 { 1 } else { taken };
+        for name in &steps[rest..] {
+            let (score, landing) = self.step(here, name, 0);
+            tally(score, name, report);
+            here = landing;
+        }
+    }
+
+    /// How many leading steps name a global object, preferring the longest
+    /// match so that `string.regex` wins over `string`.
+    fn longest(&self, steps: &[&str]) -> usize {
+        (1..=steps.len())
+            .rev()
+            .find(|taken| matches!(self.global(&steps[..*taken].join(".")), Where::At(_)))
+            .unwrap_or(0)
+    }
+
+    /// Take one step of a chain from wherever the last one landed.
+    ///
+    /// Finding the name and landing somewhere useful are two different things:
+    /// `ξ.x` on a void finds `x` exactly where the program declares it, yet
+    /// lands on a value that will not exist until the program runs.
+    ///
+    /// `ρ` is the object a formation was dispatched from, which the `dot` rule
+    /// of the calculus binds at reduction time. It usually turns out to be the
+    /// enclosing formation, but nothing in the program says it must be, so it
+    /// is left to the shape analysis rather than guessed at here.
+    ///
+    /// A formation holding a `λ` is an atom: what it offers beyond its own
+    /// bindings lives in the result its native code produces. The `atom`
+    /// attribute on that `λ` even declares the shape of that result, which the
+    /// shape analysis will be able to use; until then the step is dynamic.
+    fn step(&self, here: Where<'a>, name: &str, depth: usize) -> (Score, Where<'a>) {
+        if name == "ρ" {
+            return (Score::Dynamic, Where::Runtime);
+        }
+        match here {
+            Where::At(formation) => match self.attribute(formation, name, depth) {
+                Some(binding) => (Score::Resolved, self.value(binding, here, depth)),
+                None if child(formation, "λ").is_some() => (Score::Dynamic, Where::Runtime),
+                None => (Score::Unresolved, Where::Nowhere),
+            },
+            Where::Runtime => (Score::Dynamic, Where::Runtime),
+            Where::Nowhere => (Score::Unresolved, Where::Nowhere),
+        }
+    }
+
+    /// Where a chain lands, without scoring anything on the way.
+    fn target(&self, base: &str, scope: Where<'a>, depth: usize) -> Where<'a> {
+        let mut steps = base.split('.');
+        let mut here = match steps.next() {
+            Some("Φ") => {
+                let rest: Vec<&str> = steps.collect();
+                let taken = self.longest(&rest);
+                if taken == 0 {
+                    return Where::Nowhere;
+                }
+                let mut here = self.global(&rest[..taken].join("."));
+                for name in &rest[taken..] {
+                    here = self.step(here, name, depth + 1).1;
+                }
+                return here;
+            }
+            Some("ξ") => scope,
+            _ => return Where::Runtime,
+        };
+        for name in steps {
+            here = self.step(here, name, depth + 1).1;
+        }
+        here
+    }
+
+    /// The binding a formation offers under this name, following the decorator
+    /// when the formation does not hold the name itself.
+    fn attribute(&self, formation: &'a Element, name: &str, depth: usize) -> Option<&'a Element> {
+        if depth > DEPTH {
+            return None;
+        }
+        if let Some(found) = child(formation, name) {
+            return Some(found);
+        }
+        let decorator = child(formation, "φ")?;
+        match self.value(decorator, Where::At(formation), depth + 1) {
+            Where::At(decorated) => self.attribute(decorated, name, depth + 1),
+            _ => None,
+        }
+    }
+
+    /// The object a binding stands for: the formation it is, or wherever its
+    /// own chain lands.
+    fn value(&self, binding: &'a Element, scope: Where<'a>, depth: usize) -> Where<'a> {
+        if depth > DEPTH {
+            return Where::Runtime;
+        }
+        match attribute(binding, "base") {
+            Some("∅") => Where::Runtime,
+            Some(base) => self.target(base, scope, depth + 1),
+            None => Where::At(binding),
+        }
+    }
+
+    /// The top-level object under this full path.
+    fn global(&self, path: &str) -> Where<'a> {
+        match self
+            .globals
+            .iter()
+            .find(|(known, _)| known == path)
+            .map(|(_, object)| *object)
+        {
+            Some(found) => Where::At(found),
+            None => Where::Nowhere,
+        }
+    }
+}
+
+/// Record what a step cost, keeping the name of anything not found.
+fn tally(score: Score, name: &str, report: &mut Report) {
+    match score {
+        Score::Resolved => report.resolved += 1,
+        Score::Dynamic => report.dynamic += 1,
+        Score::Unresolved => {
+            report.unresolved += 1;
+            report.missing.push(name.to_string());
+        }
+    }
+}
+
+/// The full path a top-level object is known by: whatever `loc` says, minus the
+/// leading `Φ.`, falling back to the plain name when there is no locator.
+fn path(object: &Element) -> Option<String> {
+    match attribute(object, "loc") {
+        Some(loc) => loc.strip_prefix("Φ.").map(str::to_string),
+        None => attribute(object, "name").map(str::to_string),
+    }
+}
+
+/// The attribute a formation binds under this name.
+fn child<'a>(formation: &'a Element, name: &str) -> Option<&'a Element> {
+    formation.children.iter().find(|child| named(child, name))
+}
+
+/// Whether an element is bound under this name.
+fn named(element: &Element, name: &str) -> bool {
+    attribute(element, "name") == Some(name)
+}
+
+/// The value of a named attribute, if the element carries it.
+fn attribute<'a>(element: &'a Element, name: &str) -> Option<&'a str> {
+    element
+        .attributes
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+}
