@@ -335,6 +335,11 @@ impl<'a> Unit<'a> {
             return self.built(builder, local, frame, env);
         }
         if base.rsplit('.').next() == Some("if") {
+            if !self.truth(element, base, frame)? {
+                return Err(format!(
+                    "{base} asks something that is not a truth to choose"
+                ));
+            }
             return self.branch(builder, element, base, frame, env);
         }
         if let Where::At(target) = self.resolver.lands(Some(element), base, frame.scope, 0) {
@@ -425,6 +430,87 @@ impl<'a> Unit<'a> {
                 let no = builder.ins().f64const(0.0);
                 builder.ins().select(flag, yes, no)
             }
+        }
+    }
+
+    /// Whether what a dispatch is made on is a truth.
+    ///
+    /// `if` is compiled as a branch, which is right only for `bool`: `true`
+    /// and `false` are the same object differing in which argument they hand
+    /// back, so dispatching on one is a choice between two expressions. On
+    /// anything else the name means whatever that object says it means, and a
+    /// branch would quietly answer something else, so it is refused instead.
+    fn truth(&self, element: &'a Element, base: &str, frame: Frame<'a>) -> Result<bool, String> {
+        let landed = if base.starts_with('.') {
+            let given = element
+                .children
+                .iter()
+                .find(|child| attribute(child, "as").is_none())
+                .ok_or("a dispatch with no receiver")?;
+            self.resolver.lands(
+                Some(given),
+                attribute(given, "base").unwrap_or_default(),
+                frame.scope,
+                0,
+            )
+        } else {
+            let (head, _) = base
+                .rsplit_once('.')
+                .ok_or_else(|| format!("{base} dispatches on nothing"))?;
+            self.resolver.lands(None, head, frame.scope, 0)
+        };
+        if let Where::At(target) = landed {
+            return Ok(self.bool(target, 0));
+        }
+        // The receiver went through a value, so the name at the end of its
+        // chain is an attribute of `number`, which is where to ask instead.
+        let chain = if base.starts_with('.') {
+            element
+                .children
+                .iter()
+                .find(|child| attribute(child, "as").is_none())
+                .and_then(|given| attribute(given, "base"))
+                .unwrap_or_default()
+        } else {
+            base.rsplit_once('.').map_or("", |(head, _)| head)
+        };
+        let Some(last) = chain.rsplit('.').next() else {
+            return Ok(false);
+        };
+        match self
+            .resolver
+            .lands(None, &format!("Φ.number.{last}"), Where::Nowhere, 0)
+        {
+            Where::At(target) => Ok(self.bool(target, 0)),
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether a formation is a truth, or stands for one.
+    fn bool(&self, formation: &'a Element, depth: usize) -> bool {
+        if depth > DEPTH {
+            return false;
+        }
+        if matches!(
+            attribute(formation, "loc"),
+            Some("Φ.bool" | "Φ.true" | "Φ.false")
+        ) {
+            return true;
+        }
+        if let Some(lambda) = child(formation, "λ") {
+            return attribute(lambda, "atom") == Some("Φ.bool");
+        }
+        match child(formation, "φ") {
+            Some(body) => match self.resolver.lands(
+                Some(body),
+                attribute(body, "base").unwrap_or_default(),
+                Where::At(formation),
+                0,
+            ) {
+                Where::At(next) => !std::ptr::eq(next, formation) && self.bool(next, depth + 1),
+                _ => false,
+            },
+            None => false,
         }
     }
 
