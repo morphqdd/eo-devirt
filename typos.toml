@@ -1,0 +1,3 @@
+[files]
+# XMIR fixtures are output from the EO parser, not prose to spell-check.
+extend-exclude = ["tests/fixtures/**"]

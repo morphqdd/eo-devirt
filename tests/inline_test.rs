@@ -1,3 +1,12 @@
+//! Moving a body to where it is dispatched.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test says what it means by failing loudly, and there is nobody to hand an error to"
+)]
+
 use eo2bin::{Program, Xmir};
 
 /// A dispatch that lands on a body which never mentions `ρ` can be replaced by

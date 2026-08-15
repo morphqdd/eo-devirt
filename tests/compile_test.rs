@@ -1,7 +1,19 @@
+//! Compiling EO to a binary and running it.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test says what it means by failing loudly, and there is nobody to hand an error to"
+)]
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
 use eo2bin::{Program, Xmir};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// An expression the resolver pinned down completely, turned into machine code
 /// and run. `p1` is `(2.plus 3).plus 4`.
