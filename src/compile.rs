@@ -1055,8 +1055,8 @@ impl<'a> Unit<'a> {
     /// The value a chain names, walked from its start.
     ///
     /// A chain of more than one step has to be taken a step at a time: the
-    /// start is a void or a local, and each step after it is a dispatch on
-    /// whatever the step before came to.
+    /// start is a void, a local, or an object the program declares, and each
+    /// step after it is a dispatch on whatever the step before came to.
     fn along(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -1069,6 +1069,11 @@ impl<'a> Unit<'a> {
         }
         if let Some(local) = local(base, frame.scope) {
             return self.built(builder, local, frame, env);
+        }
+        if base.starts_with('Φ')
+            && let Where::At(target) = self.resolver.lands(None, base, Where::Nowhere, 0)
+        {
+            return self.emit(builder, target, frame.within(target), env);
         }
         let (head, last) = base
             .rsplit_once('.')
