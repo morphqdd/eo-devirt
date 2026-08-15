@@ -4,14 +4,6 @@ An ahead-of-time compiler for EO. It reads XMIR, works out where each attribute
 dispatch lands, and emits native code, spending what it worked out on direct
 instructions instead of a lookup at run time.
 
-It started as an XMIR-to-XMIR devirtualizer, on the argument that keeping the
-same format on both ends gives every transformation an oracle. That path is
-still here and still works, but it turned out to carry almost nothing: XMIR has
-no way to say "call this body directly", so the only way to spend a resolved
-dispatch is to move the body, and moving a body is nearly always unsound. Three
-sites out of 9776. The analysis pays off in code generation instead, and the
-oracle had to be given up along with the format.
-
 ## Status
 
 Stage 5 of 5: a native backend, one slice of it.
