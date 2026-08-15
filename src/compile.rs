@@ -394,9 +394,29 @@ impl<'a> Unit<'a> {
         if wanted == "as-bytes" || wanted == "code" {
             return Ok(got);
         }
-        if let Val::Bytes { size, .. } = got {
+        if let Val::Bytes { at, size } = got {
             if wanted == "size" {
                 return Ok(Val::Number(builder.ins().fcvt_from_sint(types::F64, size)));
+            }
+            if wanted == "eq" {
+                let other = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
+                let Val::Bytes {
+                    at: other_at,
+                    size: other_size,
+                } = other
+                else {
+                    return Err("bytes compared with something that is not bytes".to_string());
+                };
+                let same = self.calling(
+                    "eo_bytes_eq",
+                    &[types::I64, types::I64, types::I64, types::I64],
+                    Some(types::F64),
+                )?;
+                let callee = self.module.declare_func_in_func(same, builder.func);
+                let call = builder
+                    .ins()
+                    .call(callee, &[at, size, other_at, other_size]);
+                return Ok(Val::Number(builder.inst_results(call)[0]));
             }
             return Err(format!("bytes have no {wanted}"));
         }
