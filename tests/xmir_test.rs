@@ -1,3 +1,12 @@
+//! Reading and writing XMIR without losing anything.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test says what it means by failing loudly, and there is nobody to hand an error to"
+)]
+
 use eo2bin::Xmir;
 
 #[test]

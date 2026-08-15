@@ -1,10 +1,21 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    reason = "a tool run by hand reports to whoever ran it, and stops on anything it cannot do"
+)]
+
 //! Report how much of a program's dispatch resolves statically.
 //!
 //! Usage: `cargo run --example resolve <dir-with-xmir>`
 
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use eo2bin::{Program, Xmir};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 fn main() {
     let dir = std::env::args().nth(1).expect("usage: resolve <dir>");

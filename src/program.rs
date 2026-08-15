@@ -5,8 +5,9 @@
 //! global object, one starting at `ξ` at the enclosing formation, and a leading
 //! dot dispatches on a receiver computed at run time.
 
-use crate::xmir::{Element, Xmir};
 use std::collections::{HashMap, HashSet};
+
+use crate::xmir::{Element, Xmir};
 
 /// How far the resolver follows decorators before it gives up, so that a cycle
 /// of objects decorating each other cannot spin forever.
@@ -42,6 +43,7 @@ impl Program {
     /// Moving a body is only sound when nothing in it reads `ρ`: the `dot` rule
     /// binds `ρ` to whatever the dispatch was made on, so a body that reads it
     /// means something else once it sits somewhere else.
+    #[must_use]
     pub fn inline(&self) -> Vec<Xmir> {
         let resolver = self.resolver();
         self.documents
@@ -51,6 +53,7 @@ impl Program {
     }
 
     /// How many dispatches could be replaced by the body they land on.
+    #[must_use]
     pub fn movable(&self) -> usize {
         let resolver = self.resolver();
         self.documents
@@ -60,6 +63,7 @@ impl Program {
     }
 
     /// Resolve every reference the program makes and report on the outcome.
+    #[must_use]
     pub fn resolve(&self) -> Report {
         let resolver = self.resolver();
         let mut report = Report {
@@ -113,22 +117,26 @@ impl Program {
 
 impl Report {
     /// How many dispatch steps were pinned to a known object.
-    pub fn resolved(&self) -> usize {
+    #[must_use]
+    pub const fn resolved(&self) -> usize {
         self.resolved
     }
 
     /// How many named something the program does not declare at all.
-    pub fn unresolved(&self) -> usize {
+    #[must_use]
+    pub const fn unresolved(&self) -> usize {
         self.unresolved
     }
 
     /// How many go through a value only known at run time, and so are left to
     /// the shape analysis.
-    pub fn dynamic(&self) -> usize {
+    #[must_use]
+    pub const fn dynamic(&self) -> usize {
         self.dynamic
     }
 
     /// The names it could not find, in the order it met them.
+    #[must_use]
     pub fn missing(&self) -> &[String] {
         &self.missing
     }
@@ -216,9 +224,9 @@ impl<'a> Resolver<'a> {
             Some("∅") => Where::Runtime,
             _ => self.handed(element, scope, 0),
         };
-        for name in steps.filter(|step| !step.is_empty()) {
-            let (score, landing) = self.step(here, name, 0);
-            tally(score, name, report);
+        for named in steps.filter(|part| !part.is_empty()) {
+            let (cost, landing) = self.step(here, named, 0);
+            tally(&cost, named, report);
             here = landing;
         }
     }
@@ -300,7 +308,7 @@ impl<'a> Resolver<'a> {
                 Where::At(shape) => Shape::One(shape),
                 _ => Shape::Many,
             };
-            let key = slot as *const Element as usize;
+            let key = std::ptr::from_ref::<Element>(slot) as usize;
             match (shapes.get(&key), &seen) {
                 (None, _) => {
                     shapes.insert(key, seen);
@@ -318,13 +326,16 @@ impl<'a> Resolver<'a> {
     fn filled(&self, void: &'a Element) -> Where<'a> {
         let hidden = self
             .nests
-            .get(&(void as *const Element as usize))
+            .get(&(std::ptr::from_ref::<Element>(void) as usize))
             .and_then(|formation| attribute(formation, "name"))
             .is_some_and(|name| self.open.contains(name));
         if hidden {
             return Where::Runtime;
         }
-        match self.shapes.get(&(void as *const Element as usize)) {
+        match self
+            .shapes
+            .get(&(std::ptr::from_ref::<Element>(void) as usize))
+        {
             Some(Shape::One(shape)) => Where::At(shape),
             _ => Where::Runtime,
         }
@@ -398,12 +409,12 @@ impl<'a> Resolver<'a> {
         let taken = self.longest(steps);
         let mut here = match taken {
             0 => {
-                tally(Score::Unresolved, first, report);
+                tally(&Score::Unresolved, first, report);
                 Where::Nowhere
             }
             taken => {
                 for name in &steps[..taken] {
-                    tally(Score::Resolved, name, report);
+                    tally(&Score::Resolved, name, report);
                 }
                 self.global(&steps[..taken].join("."))
             }
@@ -411,7 +422,7 @@ impl<'a> Resolver<'a> {
         let rest = if taken == 0 { 1 } else { taken };
         for name in &steps[rest..] {
             let (score, landing) = self.step(here, name, 0);
-            tally(score, name, report);
+            tally(&score, name, report);
             here = landing;
         }
     }
@@ -445,7 +456,10 @@ impl<'a> Resolver<'a> {
             let Where::At(body) = here else {
                 return (Score::Dynamic, Where::Runtime);
             };
-            return match self.nests.get(&(body as *const Element as usize)) {
+            return match self
+                .nests
+                .get(&(std::ptr::from_ref::<Element>(body) as usize))
+            {
                 Some(nest) => (Score::Resolved, Where::At(nest)),
                 None => (Score::Dynamic, Where::Runtime),
             };
@@ -571,7 +585,7 @@ impl<'a> Resolver<'a> {
 }
 
 /// Record what a step cost, keeping the name of anything not found.
-fn tally(score: Score, name: &str, report: &mut Report) {
+fn tally(score: &Score, name: &str, report: &mut Report) {
     match score {
         Score::Resolved => report.resolved += 1,
         Score::Dynamic => report.dynamic += 1,
@@ -602,7 +616,7 @@ fn nest<'a>(
     nests: &mut HashMap<usize, &'a Element>,
 ) {
     if let Some(formation) = formation {
-        nests.insert(element as *const Element as usize, formation);
+        nests.insert(std::ptr::from_ref::<Element>(element) as usize, formation);
     }
     let inner = match attribute(element, "base") {
         Some(_) => formation,

@@ -1,6 +1,15 @@
+//! Every XMIR file survives being parsed and printed.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test says what it means by failing loudly, and there is nobody to hand an error to"
+)]
+
+use std::{fs, path::PathBuf};
+
 use eo2bin::Xmir;
-use std::fs;
-use std::path::PathBuf;
 
 /// Every XMIR file must survive parse-print-parse unchanged. The parser refuses
 /// anything it cannot model, so an unchanged second parse means the first one

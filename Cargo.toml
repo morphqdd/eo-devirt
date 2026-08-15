@@ -1,11 +1,55 @@
 [workspace]
 members = ["runtime"]
 
+[workspace.lints.rust]
+missing_docs = "deny"
+missing_debug_implementations = "allow" # nothing here is a public type to print
+rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
+
+[workspace.lints.clippy]
+# The whole of all, pedantic and nursery are hard errors. Opt-outs below say
+# why, and the list is meant to stay short.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Failing loudly is banned in the compiler: every path returns a message
+# saying what it could not do.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+lossy_float_literal = "deny"
+allow_attributes_without_reason = "deny"
+# Opt-outs, with reasons:
+module_name_repetitions = "allow" # idiomatic in Rust module layouts
+missing_errors_doc = "allow"      # every error here is a String saying what happened
+missing_panics_doc = "allow"      # panicking is denied anyway
+cargo_common_metadata = "allow"   # not published to crates.io
+multiple_crate_versions = "allow" # the Cranelift tree brings its own
+redundant_pub_crate = "allow"     # the modules are private, so pub would be unreachable_pub
+# A compiler counts in words, offsets and addresses, so it converts between
+# usize, u64 and i64 constantly. They are one width on every target this emits
+# code for, and writing every one of them as a fallible conversion would say
+# less than it costs.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+option_if_let_else = "allow" # if/else reads better than map_or where the arms are work
+
 [package]
 name = "eo2bin"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+[lints]
+workspace = true
 
 [dependencies]
 cranelift-codegen = "0.134.3"

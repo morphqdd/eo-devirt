@@ -1,7 +1,6 @@
 //! Reader and writer for XMIR, the XML dialect the EO parser emits.
 
-use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::{Reader, events::Event};
 
 /// A parsed XMIR document.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -24,7 +23,7 @@ pub(crate) struct Element {
     pub(crate) tag: String,
     pub(crate) attributes: Vec<(String, String)>,
     pub(crate) text: Option<String>,
-    pub(crate) children: Vec<Element>,
+    pub(crate) children: Vec<Self>,
 }
 
 impl Xmir {
@@ -74,11 +73,11 @@ impl Xmir {
             }
         }
         root.map(|root| Self { prologue, root })
-            .ok_or("no root element".to_string())
+            .ok_or_else(|| "no root element".to_string())
     }
 
     /// The root element of the document.
-    pub(crate) fn root(&self) -> &Element {
+    pub(crate) const fn root(&self) -> &Element {
         &self.root
     }
 
@@ -91,12 +90,21 @@ impl Xmir {
     }
 
     /// Render the document back to XMIR text.
+    #[must_use]
     pub fn print(&self) -> String {
         let mut out = String::new();
         for item in &self.prologue {
             match item {
-                Prologue::Declaration(raw) => out.push_str(&format!("<?{raw}?>\n")),
-                Prologue::Comment(raw) => out.push_str(&format!("<!--{raw}-->\n")),
+                Prologue::Declaration(raw) => {
+                    out.push_str("<?");
+                    out.push_str(raw);
+                    out.push_str("?>\n");
+                }
+                Prologue::Comment(raw) => {
+                    out.push_str("<!--");
+                    out.push_str(raw);
+                    out.push_str("-->\n");
+                }
             }
         }
         write(&self.root, 0, &mut out);
@@ -161,7 +169,7 @@ fn adopt(
     Ok(())
 }
 
-fn element(start: &quick_xml::events::BytesStart) -> Result<Element, String> {
+fn element(start: &quick_xml::events::BytesStart<'_>) -> Result<Element, String> {
     let mut attributes = Vec::new();
     for attr in start.attributes() {
         let attr = attr.map_err(|e| e.to_string())?;
@@ -184,12 +192,18 @@ fn write(element: &Element, depth: usize, out: &mut String) {
     out.push('<');
     out.push_str(&element.tag);
     for (key, value) in &element.attributes {
-        out.push_str(&format!(" {key}=\"{value}\""));
+        out.push(' ');
+        out.push_str(key);
+        out.push_str("=\"");
+        out.push_str(value);
+        out.push('"');
     }
     if let Some(text) = &element.text {
         out.push('>');
         out.push_str(&quick_xml::escape::escape(text));
-        out.push_str(&format!("</{}>\n", element.tag));
+        out.push_str("</");
+        out.push_str(&element.tag);
+        out.push_str(">\n");
         return;
     }
     if element.children.is_empty() {
@@ -201,5 +215,7 @@ fn write(element: &Element, depth: usize, out: &mut String) {
         write(child, depth + 1, out);
     }
     out.push_str(&pad);
-    out.push_str(&format!("</{}>\n", element.tag));
+    out.push_str("</");
+    out.push_str(&element.tag);
+    out.push_str(">\n");
 }

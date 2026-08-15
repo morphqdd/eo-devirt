@@ -5,9 +5,7 @@
 //! system through libc, which is also the route Windows will need, having no
 //! stable syscall numbering of its own.
 
-use std::cell::RefCell;
-use std::ffi::CStr;
-use std::io::Write;
+use std::{cell::RefCell, ffi::CStr, io::Write};
 
 /// How many arguments a system call may be handed.
 const ARGUMENTS: usize = 4;
@@ -48,9 +46,8 @@ pub unsafe extern "C" fn eo_posix(
     fourth: i64,
 ) -> f64 {
     let handed = [first, second, third, fourth];
-    let named = match unsafe { CStr::from_ptr(name.cast()) }.to_str() {
-        Ok(named) => named,
-        Err(_) => refuse("a name that is not text"),
+    let Ok(named) = unsafe { CStr::from_ptr(name.cast()) }.to_str() else {
+        refuse("a name that is not text")
     };
     if count > ARGUMENTS {
         refuse("more arguments than a system call takes here");

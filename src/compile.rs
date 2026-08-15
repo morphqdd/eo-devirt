@@ -5,16 +5,22 @@
 //! unfolding. Values are doubles throughout, a truth being 1.0 or 0.0.
 //! Everything outside that is refused rather than guessed at.
 
-use crate::program::{Program, Resolver, Where, attribute, child};
-use crate::xmir::Element;
-use cranelift_codegen::ir::condcodes::FloatCC;
-use cranelift_codegen::ir::{AbiParam, BlockArg, InstBuilder, Value, types};
-use cranelift_codegen::settings::Configurable as _;
-use cranelift_codegen::{Context, isa, settings};
+use std::collections::HashMap;
+
+use cranelift_codegen::{
+    Context,
+    ir::{AbiParam, BlockArg, InstBuilder, Value, condcodes::FloatCC, types},
+    isa, settings,
+    settings::Configurable as _,
+};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use std::collections::HashMap;
+
+use crate::{
+    program::{Program, Resolver, Where, attribute, child},
+    xmir::Element,
+};
 
 /// What is known while one function is being built.
 #[derive(Default)]
@@ -44,8 +50,8 @@ impl Env {
     }
 
     /// What a void was bound to.
-    fn get(&self, void: &usize) -> Option<&Val> {
-        self.filled.get(void)
+    fn get(&self, void: usize) -> Option<&Val> {
+        self.filled.get(&void)
     }
 }
 
@@ -98,7 +104,7 @@ struct Frame<'a> {
 
 impl<'a> Frame<'a> {
     /// The frame for the body of a formation being entered.
-    fn within(self, formation: &'a Element) -> Self {
+    const fn within(self, formation: &'a Element) -> Self {
         Self {
             scope: Where::At(formation),
             depth: self.depth + 1,
@@ -106,7 +112,7 @@ impl<'a> Frame<'a> {
     }
 
     /// The frame one expression further in.
-    fn inner(self) -> Self {
+    const fn inner(self) -> Self {
         Self {
             scope: self.scope,
             depth: self.depth + 1,
@@ -307,7 +313,7 @@ impl<'a> Unit<'a> {
     /// `env` holds the value bound to every void filled so far.
     fn emit(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
@@ -339,7 +345,7 @@ impl<'a> Unit<'a> {
                 let right = self
                     .emit(builder, argument(element, 0)?, frame.inner(), env)?
                     .number()?;
-                return Ok(Val::Number(self.operate(builder, op, left, right)));
+                return Ok(Val::Number(Self::operate(builder, &op, left, right)));
             }
             if plain(target) {
                 return self.object(builder, target);
@@ -369,7 +375,7 @@ impl<'a> Unit<'a> {
     /// from the call site.
     fn upon(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         base: &str,
         frame: Frame<'a>,
@@ -402,13 +408,13 @@ impl<'a> Unit<'a> {
         if let Some(op) = attribute(target, "loc").and_then(instruction) {
             let right = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
             let right = self.unboxed(builder, right)?;
-            return Ok(Val::Number(self.operate(builder, op, value, right)));
+            return Ok(Val::Number(Self::operate(builder, &op, value, right)));
         }
         self.call(builder, element, target, &[value], frame, env)
     }
 
     /// Build one instruction.
-    fn operate(&self, builder: &mut FunctionBuilder, op: Op, left: Value, right: Value) -> Value {
+    fn operate(builder: &mut FunctionBuilder<'_>, op: &Op, left: Value, right: Value) -> Value {
         match op {
             Op::Add => builder.ins().fadd(left, right),
             Op::Times => builder.ins().fmul(left, right),
@@ -496,7 +502,7 @@ impl<'a> Unit<'a> {
     /// in the block being built now.
     fn built(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         local: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
@@ -521,7 +527,7 @@ impl<'a> Unit<'a> {
     /// nothing else, however much work its attributes would be.
     fn object(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         formation: &'a Element,
     ) -> Result<Val, String> {
         let shape = self.shape(formation)?;
@@ -657,7 +663,7 @@ impl<'a> Unit<'a> {
     }
 
     /// Put a value into the form an object slot holds.
-    fn boxed(&mut self, builder: &mut FunctionBuilder, value: Val) -> Result<Value, String> {
+    fn boxed(&mut self, builder: &mut FunctionBuilder<'_>, value: Val) -> Result<Value, String> {
         match value {
             Val::Object(at) => Ok(at),
             Val::Number(number) => {
@@ -671,7 +677,7 @@ impl<'a> Unit<'a> {
     }
 
     /// Take a number back out of an object.
-    fn unboxed(&mut self, builder: &mut FunctionBuilder, value: Val) -> Result<Value, String> {
+    fn unboxed(&mut self, builder: &mut FunctionBuilder<'_>, value: Val) -> Result<Value, String> {
         match value {
             Val::Object(at) => {
                 let read = self.calling("eo_as_number", &[types::I64], Some(types::F64))?;
@@ -686,7 +692,7 @@ impl<'a> Unit<'a> {
     /// Look a name up on an object while the program runs.
     fn lookup(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         object: Value,
         name: &str,
     ) -> Result<Val, String> {
@@ -720,7 +726,7 @@ impl<'a> Unit<'a> {
     /// which recursion depends on.
     fn branch(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         base: &str,
         frame: Frame<'a>,
@@ -770,7 +776,7 @@ impl<'a> Unit<'a> {
     /// walking the tails and taking the heads gives them back in order.
     fn syscall(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
@@ -817,7 +823,7 @@ impl<'a> Unit<'a> {
     /// Build a string literal, which is bytes laid down once and pointed at.
     fn letters(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
     ) -> Result<Val, String> {
         let raw = raw(argument(element, 0)?).ok_or("a string with nothing to read")?;
@@ -861,7 +867,7 @@ impl<'a> Unit<'a> {
     /// Walk a tuple, building each of its items in turn.
     fn gather(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
@@ -883,7 +889,7 @@ impl<'a> Unit<'a> {
     /// Build a call to the function standing for a formation.
     fn call(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         formation: &'a Element,
         prefix: &[Value],
@@ -933,7 +939,7 @@ impl<'a> Unit<'a> {
     /// step otherwise.
     fn receiver(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         element: &'a Element,
         base: &str,
         frame: Frame<'a>,
@@ -960,7 +966,7 @@ impl<'a> Unit<'a> {
     /// whatever the step before came to.
     fn along(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         base: &str,
         frame: Frame<'a>,
         env: &mut Env,
@@ -1101,7 +1107,7 @@ fn local<'a>(base: &str, scope: Where<'a>) -> Option<&'a Element> {
 
 /// What a void was bound to.
 fn held(void: &Element, env: &Env) -> Result<Val, String> {
-    env.get(&address(void))
+    env.get(address(void))
         .copied()
         .ok_or_else(|| "a void nothing was bound to".to_string())
 }

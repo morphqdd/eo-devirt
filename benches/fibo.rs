@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    reason = "a tool run by hand reports to whoever ran it, and stops on anything it cannot do"
+)]
+
 //! Time naive fibonacci, compiled.
 //!
 //! Two things are timed apart. Compiling is a plain function, measured in
@@ -9,10 +17,13 @@
 //! The argument is patched straight into the XMIR, so no parser has to run per
 //! size.
 
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
 use eo2bin::{Program, Xmir};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The sizes to time. Naive fibonacci roughly doubles in cost with each step.
 const SIZES: [u32; 5] = [18, 20, 25, 30, 32];
@@ -33,13 +44,13 @@ fn main() {
 }
 
 #[divan::bench(consts = SIZES)]
-fn compile<const SIZE: u32>(bencher: divan::Bencher) {
+fn compile<const SIZE: u32>(bencher: divan::Bencher<'_, '_>) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     bencher.bench(|| divan::black_box(object(&root, f64::from(SIZE))));
 }
 
 #[divan::bench(consts = SIZES, sample_count = 20)]
-fn run<const SIZE: u32>(bencher: divan::Bencher) {
+fn run<const SIZE: u32>(bencher: divan::Bencher<'_, '_>) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let out = link(&root, f64::from(SIZE));
     bencher.bench(|| divan::black_box(Command::new(&out).output().unwrap()));

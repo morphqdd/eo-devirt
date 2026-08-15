@@ -1,3 +1,12 @@
+//! Working out what an expression will turn out to be.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a test says what it means by failing loudly, and there is nobody to hand an error to"
+)]
+
 use eo2bin::{Program, Xmir};
 
 /// `ρ` is bound by the `dot` rule to the formation that held the attribute, and

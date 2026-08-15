@@ -1,0 +1,18 @@
+# One style everywhere. Needs nightly rustfmt for the unstable options below,
+# which is what the fmt job runs; locally, cargo +nightly fmt.
+edition = "2024"
+newline_style = "Unix"
+
+# Imports: one shape for the whole project
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Code
+use_field_init_shorthand = true
+use_try_shorthand = true
+reorder_impl_items = true
+format_code_in_doc_comments = true
+normalize_comments = false
+wrap_comments = false

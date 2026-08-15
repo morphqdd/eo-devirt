@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Every warning anywhere is a hard error. The lint policy itself lives in
+  # Cargo.toml [workspace.lints] so it applies locally too.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    name: rustfmt (nightly, style-enforcing)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # nightly: rustfmt.toml uses unstable options (imports_granularity, ...)
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy-test:
+    name: clippy (all+pedantic+nursery+cargo, -D warnings) & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (all targets, warnings are errors)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The compile tests link a binary and run it, so the runtime has to be
+      # built first and cc has to be there. Both are on the runner already.
+      - name: Runtime
+        run: cargo build --package eo-runtime
+      - name: Tests
+        run: cargo test --workspace --all-features
+
+  deny:
+    name: cargo-deny (advisories, licenses, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+
+  machete:
+    name: cargo-machete (unused dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bnjbvr/cargo-machete@main
+
+  typos:
+    name: typos (spelling)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@master
