@@ -116,8 +116,15 @@ struct Unit<'a> {
 }
 
 impl<'a> Unit<'a> {
-    /// Build `main`, which evaluates one expression and exits with it.
+    /// Build `main`, which evaluates one expression, writes it out through the
+    /// runtime and exits.
     fn entry(&mut self, body: &'a Element, object: &'a Element) -> Result<(), String> {
+        let mut writing = self.module.make_signature();
+        writing.params.push(AbiParam::new(types::F64));
+        let printer = self
+            .module
+            .declare_function("eo_print", Linkage::Import, &writing)
+            .map_err(|e| e.to_string())?;
         let mut context = self.module.make_context();
         context
             .func
@@ -139,8 +146,10 @@ impl<'a> Unit<'a> {
             },
             &mut env,
         )?;
-        let code = builder.ins().fcvt_to_sint(types::I32, value);
-        builder.ins().return_(&[code]);
+        let callee = self.module.declare_func_in_func(printer, builder.func);
+        builder.ins().call(callee, &[value]);
+        let fine = builder.ins().iconst(types::I32, 0);
+        builder.ins().return_(&[fine]);
         builder.finalize(self.frontend);
         self.define("main", Linkage::Export, &mut context)?;
         Ok(())

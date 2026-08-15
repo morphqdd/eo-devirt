@@ -33,9 +33,20 @@ $ eoc dataize p1
 [0x40220000-00000000-] = 9.0
 ```
 
-The binary exits with 9, which agrees. That comparison holds only while the
-answer is a small whole number, an exit code being one byte; past that the
-value has to be printed, and printing needs a runtime this does not have yet.
+The binary writes `9.0`, which agrees. It writes rather than exits with a code,
+so the comparison holds for any number rather than only small whole ones.
+
+## The runtime
+
+`runtime/` is what a compiled program leans on while it runs, linked into the
+binary as a static library. The compiler emits calls into it by name, so
+everything there is `extern "C"` and unmangled.
+
+It reaches the operating system through libc rather than raw syscalls. Windows
+has no stable syscall numbering and needs the DLL route regardless, so the
+second path would have to exist anyway, and libc is one path for both.
+
+So far it holds one function, which writes out a dataized number.
 
 ## Where the dispatch goes
 
