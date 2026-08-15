@@ -180,6 +180,25 @@ fn run(name: &str) -> (String, String) {
     (written.trim().to_string(), reported.trim().to_string())
 }
 
+/// A decorated object picked while running. `p16` has one decorating another,
+/// chooses between them on a condition, and asks for an attribute the
+/// decorated one holds.
+///
+/// This passes without any decorator being followed at run time: a formation
+/// with a `φ` is not held as an object, so `derived` is called and its `φ`
+/// evaluated, which hands back `base` itself. The answer is right and the
+/// object is not -- asking for `extra`, which only `derived` has, would find
+/// nothing. That gap is #3, and this test does not reach it.
+///
+/// ```text
+/// $ eoc dataize p16
+/// [0x401C0000-00000000-] = 7.0
+/// ```
+#[test]
+fn picks_a_decorated_object_while_running() {
+    assert_eq!(run("p16").1, "7.0");
+}
+
 /// Compile one fixture, whatever comes of it.
 fn compile(name: &str) -> Result<Vec<u8>, String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
