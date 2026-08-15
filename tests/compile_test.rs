@@ -66,6 +66,20 @@ fn makes_a_system_call() {
     assert_eq!(run("p6"), "-1.0");
 }
 
+/// Bytes reaching the operating system. `p7` writes "hi" to the standard
+/// output and answers with how many bytes went. The two run together because
+/// the program writes no line ending of its own.
+///
+/// ```text
+/// $ eoc dataize p7
+/// hi
+/// [0x40000000-00000000-] = 2.0
+/// ```
+#[test]
+fn writes_bytes_to_the_standard_output() {
+    assert_eq!(run("p7"), "hi2.0");
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it and hand back what it wrote.
 fn run(name: &str) -> String {

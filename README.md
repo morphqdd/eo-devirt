@@ -29,13 +29,17 @@ unevaluated.
 of them are named in the compiler. They are written in EO on top of `gt`, `plus`
 and `times`, so those four instructions were enough for all three to fall out.
 
-Values are unboxed doubles throughout, a truth being 1.0 or 0.0. So the slice
-this covers is the numeric one, and everything outside it is refused with a
-message rather than guessed at. Two places where the value model shows through
-are named in the code rather than inferred: `dataized` and `as-bytes` are
-no-ops, a number and its bytes being the same thing unboxed, and `if` is
-recognised by name, which is right for the runtime's `bool` but would misfire on
-a user object that also has one.
+A value is either a number, an unboxed double with a truth being 1.0 or 0.0, or
+bytes, which are where they start and how many of them there are. Nothing is
+allocated while the program runs: a string literal is laid down in the object
+file once and pointed at. So bytes go into a system call and answer `.size`,
+while a function still carries only numbers, and everything outside that is
+refused with a message rather than guessed at.
+
+Two places where the value model shows through are named in the code rather
+than inferred: `dataized` and `as-bytes` are no-ops, a number and its bytes
+being the same thing unboxed, and `if` is recognised by name, which is right
+for the runtime's `bool` but would misfire on a user object that also has one.
 
 The oracle is `eoc dataize`, which runs the same source through the Java
 runtime. Comparing against it is the only check a binary can have, the format
@@ -59,7 +63,9 @@ It reaches the operating system through libc rather than raw syscalls. Windows
 has no stable syscall numbering and needs the DLL route regardless, so the
 second path would have to exist anyway, and libc is one path for both.
 
-So far it writes out a dataized number, and makes a system call.
+So far it writes out a dataized number, and makes a system call. `p7` is
+`posix "write" * 1 "hi" 2`, and the binary writes `hi` the way any other
+program does.
 
 The name of a system call is a literal at every call site the runtime library
 has, so the compiler reads it and lays it down as a string for the runtime to
