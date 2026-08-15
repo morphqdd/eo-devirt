@@ -154,12 +154,18 @@ impl Program {
             pending: Vec::new(),
             spelt: 0,
             interned: HashMap::new(),
+            attributes: Vec::new(),
             shapes: HashMap::new(),
             frontend,
         };
         unit.entry(body, object)?;
-        while let Some(formation) = unit.pending.pop() {
-            unit.body(formation)?;
+        while !unit.pending.is_empty() || !unit.attributes.is_empty() {
+            while let Some(formation) = unit.pending.pop() {
+                unit.body(formation)?;
+            }
+            while let Some((binding, formation)) = unit.attributes.pop() {
+                unit.body_of(binding, formation)?;
+            }
         }
         unit.module.finish().emit().map_err(|e| e.to_string())
     }
@@ -174,6 +180,7 @@ struct Unit<'a> {
     pending: Vec<&'a Element>,
     spelt: usize,
     interned: HashMap<String, u64>,
+    attributes: Vec<(&'a Element, &'a Element)>,
     shapes: HashMap<usize, cranelift_module::DataId>,
     frontend: cranelift_codegen::isa::TargetFrontendConfig,
 }
@@ -305,7 +312,7 @@ impl<'a> Unit<'a> {
                 return Ok(Val::Number(self.operate(builder, op, left, right)));
             }
             if plain(target) {
-                return self.object(builder, target, frame, env);
+                return self.object(builder, target);
             }
             if attribute(target, "loc") == Some("Φ.string") {
                 return self.letters(builder, element);
@@ -456,18 +463,15 @@ impl<'a> Unit<'a> {
         )
     }
 
-    /// Build an object: room of its shape, then every attribute bound into it.
+    /// Build an object: room of its shape, and nothing put in it.
     ///
-    /// This is the boxed form, and the compiler reaches for it only where the
-    /// resolver could not say what an expression would be, since holding a
-    /// value this way costs an allocation and a lookup that holding it as a
-    /// number does not.
+    /// The slots stay empty. An attribute is a body that runs the first time
+    /// something asks for it, so making an object costs one allocation and
+    /// nothing else, however much work its attributes would be.
     fn object(
         &mut self,
         builder: &mut FunctionBuilder,
         formation: &'a Element,
-        frame: Frame<'a>,
-        env: &mut Env,
     ) -> Result<Val, String> {
         let shape = self.shape(formation)?;
         let word = self.module.declare_data_in_func(shape, builder.func);
@@ -475,33 +479,124 @@ impl<'a> Unit<'a> {
         let made = self.calling("eo_make", &[types::I64], Some(types::I64))?;
         let callee = self.module.declare_func_in_func(made, builder.func);
         let call = builder.ins().call(callee, &[at]);
-        let object = builder.inst_results(call)[0];
-        for (slot, binding) in formation.children.iter().enumerate() {
-            let value = self.emit(builder, binding, frame.within(formation), env)?;
-            let boxed = self.boxed(builder, value)?;
-            let index = builder.ins().iconst(types::I64, slot as i64);
-            let fill = self.calling("eo_fill", &[types::I64, types::I64, types::I64], None)?;
-            let callee = self.module.declare_func_in_func(fill, builder.func);
-            builder.ins().call(callee, &[object, index, boxed]);
-        }
-        Ok(Val::Object(object))
+        Ok(Val::Object(builder.inst_results(call)[0]))
     }
 
     /// Lay down the shape of a formation: how many attributes, then the number
-    /// each of their names was interned to.
+    /// each of their names was interned to, then the body of each.
     fn shape(&mut self, formation: &'a Element) -> Result<cranelift_module::DataId, String> {
         if let Some(id) = self.shapes.get(&address(formation)) {
             return Ok(*id);
         }
-        let mut words = (formation.children.len() as u64).to_ne_bytes().to_vec();
+        let count = formation.children.len();
+        let mut bodies = Vec::new();
+        for binding in &formation.children {
+            bodies.push(self.attribute(binding, formation)?);
+        }
+        let mut words = (count as u64).to_ne_bytes().to_vec();
         for binding in &formation.children {
             let name = attribute(binding, "name").ok_or("an attribute with no name")?;
             let number = self.intern(name);
             words.extend_from_slice(&number.to_ne_bytes());
         }
-        let id = self.lay(words)?;
+        words.extend(std::iter::repeat_n(0u8, count * WORD as usize));
+        let id = self
+            .module
+            .declare_data(
+                &format!("eo_shape_{}", self.spelt),
+                Linkage::Local,
+                false,
+                false,
+            )
+            .map_err(|e| e.to_string())?;
+        self.spelt += 1;
+        let mut description = cranelift_module::DataDescription::new();
+        description.set_align(WORD);
+        description.define(words.into_boxed_slice());
+        for (slot, body) in bodies.iter().enumerate() {
+            let reference = self.module.declare_func_in_data(*body, &mut description);
+            let at = (1 + count + slot) * WORD as usize;
+            description.write_function_addr(at as u32, reference);
+        }
+        self.module
+            .define_data(id, &description)
+            .map_err(|e| e.to_string())?;
         self.shapes.insert(address(formation), id);
         Ok(id)
+    }
+
+    /// Declare the function standing for one attribute, and queue its body.
+    ///
+    /// It takes the object it was dispatched from and hands back an object,
+    /// which is the shape every attribute has, whatever it holds.
+    fn attribute(
+        &mut self,
+        binding: &'a Element,
+        formation: &'a Element,
+    ) -> Result<FuncId, String> {
+        if let Some(id) = self.signed.get(&address(binding)) {
+            return Ok(*id);
+        }
+        let signature = self.calling_shape(&[types::I64], Some(types::I64));
+        let id = self
+            .module
+            .declare_function(
+                &name(binding, self.signed.len()),
+                Linkage::Local,
+                &signature,
+            )
+            .map_err(|e| e.to_string())?;
+        self.signed.insert(address(binding), id);
+        self.attributes.push((binding, formation));
+        Ok(id)
+    }
+
+    /// Build the function standing for one attribute.
+    fn body_of(&mut self, binding: &'a Element, formation: &'a Element) -> Result<(), String> {
+        let id = *self
+            .signed
+            .get(&address(binding))
+            .ok_or("an attribute compiled before it was declared")?;
+        let mut context = self.module.make_context();
+        context.func.signature = self.calling_shape(&[types::I64], Some(types::I64));
+        let mut shell = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut shell);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let mut env = Env::new();
+        let value = self.emit(
+            &mut builder,
+            binding,
+            Frame {
+                scope: Where::At(formation),
+                depth: 0,
+            },
+            &mut env,
+        )?;
+        let handed = self.boxed(&mut builder, value)?;
+        builder.ins().return_(&[handed]);
+        builder.finalize(self.frontend);
+        self.module
+            .define_function(id, &mut context)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The shape of a call into or out of the runtime.
+    fn calling_shape(
+        &self,
+        takes: &[types::Type],
+        gives: Option<types::Type>,
+    ) -> cranelift_codegen::ir::Signature {
+        let mut signature = self.module.make_signature();
+        for each in takes {
+            signature.params.push(AbiParam::new(*each));
+        }
+        if let Some(gives) = gives {
+            signature.returns.push(AbiParam::new(gives));
+        }
+        signature
     }
 
     /// The number a name is known by, the same everywhere in one program.
@@ -559,13 +654,7 @@ impl<'a> Unit<'a> {
         takes: &[types::Type],
         gives: Option<types::Type>,
     ) -> Result<FuncId, String> {
-        let mut signature = self.module.make_signature();
-        for each in takes {
-            signature.params.push(AbiParam::new(*each));
-        }
-        if let Some(gives) = gives {
-            signature.returns.push(AbiParam::new(gives));
-        }
+        let signature = self.calling_shape(takes, gives);
         self.module
             .declare_function(name, Linkage::Import, &signature)
             .map_err(|e| e.to_string())
@@ -854,11 +943,15 @@ fn text(element: &Element) -> Option<String> {
 }
 
 /// The datum an expression wraps, however many wrappers deep.
+///
+/// A single byte is written with a dash after it, `78-`, and empty bytes as
+/// `--`, so the pieces between dashes can be empty and are passed over.
 fn raw(element: &Element) -> Option<Vec<u8>> {
     if let Some(hex) = &element.text {
         return hex
             .trim()
             .split('-')
+            .filter(|byte| !byte.is_empty())
             .map(|byte| u8::from_str_radix(byte, 16))
             .collect::<Result<Vec<u8>, _>>()
             .ok();

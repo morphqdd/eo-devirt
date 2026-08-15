@@ -107,6 +107,21 @@ fn dispatches_on_an_object_chosen_while_running() {
     assert_eq!(run("p12").1, "1.0");
 }
 
+/// An attribute nothing asks for is never computed. `p13` holds one that
+/// writes a letter when it runs, and asks the object for a different one, so
+/// the letter must not appear.
+///
+/// ```text
+/// $ eoc dataize p13
+/// [0x3FF00000-00000000-] = 1.0
+/// ```
+///
+/// with nothing on the output.
+#[test]
+fn leaves_an_attribute_alone_until_it_is_asked_for() {
+    assert_eq!(run("p13"), (String::new(), "1.0".to_string()));
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it, and hand back what the program wrote
 /// and what it dataized to, which the runtime reports separately.
@@ -125,6 +140,8 @@ fn run(name: &str) -> (String, String) {
         "string",
         "tuple",
         "posix",
+        "true",
+        "false",
     ]
     .iter()
     .map(|each| {

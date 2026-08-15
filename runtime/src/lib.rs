@@ -89,8 +89,8 @@ const DATUM: usize = 1;
 /// Make an object of one shape, with room for what the shape names.
 ///
 /// A shape is a run of words the compiler laid down: how many attributes, then
-/// their names. It is read here and never written, so two objects of a kind
-/// share one and nothing is copied.
+/// their names, then the body of each. It is read here and never written, so
+/// two objects of a kind share one and nothing is copied.
 ///
 /// # Safety
 ///
@@ -103,16 +103,6 @@ pub unsafe extern "C" fn eo_make(shape: *const u64) -> *mut u64 {
     let at = room.as_mut_ptr();
     ARENA.with(|arena| arena.borrow_mut().push(room));
     at
-}
-
-/// Bind an attribute of an object, by the place its name sits in the shape.
-///
-/// # Safety
-///
-/// Called from generated code, which fills only slots the shape names.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn eo_fill(object: *mut u64, slot: usize, value: *const u64) {
-    unsafe { *object.add(HEADER + slot) = value as u64 };
 }
 
 /// Wrap a number so it can be held where an object is held.
@@ -145,6 +135,11 @@ pub unsafe extern "C" fn eo_as_number(object: *const u64) -> f64 {
 /// This is the lookup the whole compiler exists to avoid: it runs only where
 /// the shape of the object could not be worked out ahead of time.
 ///
+/// An attribute is a body, not a value. It runs the first time it is asked
+/// for, with the object as what it was dispatched from, and the answer is kept
+/// in the slot so it runs once. That is what makes an attribute nobody asks
+/// for cost nothing.
+///
 /// # Safety
 ///
 /// Called from generated code with an object it made.
@@ -156,9 +151,22 @@ pub unsafe extern "C" fn eo_dispatch(object: *const u64, name: u64) -> *const u6
     }
     let count = unsafe { *shape } as usize;
     for slot in 0..count {
-        if unsafe { *shape.add(1 + slot) } == name {
-            return unsafe { *object.add(HEADER + slot) } as *const u64;
+        if unsafe { *shape.add(1 + slot) } != name {
+            continue;
         }
+        let held = unsafe { *object.add(HEADER + slot) };
+        if held != 0 {
+            return held as *const u64;
+        }
+        let body = unsafe { *shape.add(1 + count + slot) };
+        if body == 0 {
+            refuse("an attribute with nothing behind it");
+        }
+        let run: extern "C" fn(*const u64) -> *const u64 =
+            unsafe { std::mem::transmute::<u64, extern "C" fn(*const u64) -> *const u64>(body) };
+        let made = run(object);
+        unsafe { *object.cast_mut().add(HEADER + slot) = made as u64 };
+        return made;
     }
     refuse("an attribute the object does not have")
 }
