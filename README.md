@@ -50,8 +50,12 @@ $ eoc dataize p1
 [0x40220000-00000000-] = 9.0
 ```
 
-The binary writes `9.0`, which agrees. It writes rather than exits with a code,
-so the comparison holds for any number rather than only small whole ones.
+The binary reports `9.0`, which agrees. It reports rather than exits with a
+code, so the comparison holds for any number rather than only small whole ones.
+
+The report goes to the error stream. What a program writes for itself is its
+own, and the value it dataizes to is the harness speaking about it, so the two
+must not run together -- the Java runtime draws the same line.
 
 ## The runtime
 
@@ -63,9 +67,15 @@ It reaches the operating system through libc rather than raw syscalls. Windows
 has no stable syscall numbering and needs the DLL route regardless, so the
 second path would have to exist anyway, and libc is one path for both.
 
-So far it writes out a dataized number, and makes a system call. `p7` is
-`posix "write" * 1 "hi" 2`, and the binary writes `hi` the way any other
-program does.
+So far it reports a dataized number, and makes a system call. `p7` is
+`posix "write" * 1 "hi" 2`:
+
+```text
+$ ./p7 2>/dev/null
+hi
+$ ./p7 2>&1 >/dev/null
+2.0
+```
 
 The name of a system call is a literal at every call site the runtime library
 has, so the compiler reads it and lays it down as a string for the runtime to

@@ -14,7 +14,7 @@ use std::process::Command;
 /// ```
 #[test]
 fn compiles_constant_arithmetic() {
-    assert_eq!(run("p1"), "9.0");
+    assert_eq!(run("p1").1, "9.0");
 }
 
 /// A formation applied to a literal. `p2` declares `twice(x) = x.plus x` and
@@ -26,7 +26,7 @@ fn compiles_constant_arithmetic() {
 /// ```
 #[test]
 fn compiles_a_formation_applied_to_a_literal() {
-    assert_eq!(run("p2"), "42.0");
+    assert_eq!(run("p2").1, "42.0");
 }
 
 /// Recursion and branching. `p4` is `fibo 6`, where `fibo` calls itself twice
@@ -39,7 +39,7 @@ fn compiles_a_formation_applied_to_a_literal() {
 /// ```
 #[test]
 fn compiles_a_recursive_object() {
-    assert_eq!(run("p4"), "8.0");
+    assert_eq!(run("p4").1, "8.0");
 }
 
 /// A result an exit code cannot carry. `p5` is `2.div 4`, and the answer only
@@ -51,7 +51,7 @@ fn compiles_a_recursive_object() {
 /// ```
 #[test]
 fn writes_out_a_result_that_is_not_a_whole_number() {
-    assert_eq!(run("p5"), "0.5");
+    assert_eq!(run("p5").1, "0.5");
 }
 
 /// A system call. `p6` closes a descriptor that was never open, which every
@@ -63,12 +63,13 @@ fn writes_out_a_result_that_is_not_a_whole_number() {
 /// ```
 #[test]
 fn makes_a_system_call() {
-    assert_eq!(run("p6"), "-1.0");
+    assert_eq!(run("p6").1, "-1.0");
 }
 
 /// Bytes reaching the operating system. `p7` writes "hi" to the standard
-/// output and answers with how many bytes went. The two run together because
-/// the program writes no line ending of its own.
+/// output and answers with how many bytes went. The two stay apart: what the
+/// program writes is its own, and what it dataizes to is the runtime speaking
+/// about it.
 ///
 /// ```text
 /// $ eoc dataize p7
@@ -77,12 +78,13 @@ fn makes_a_system_call() {
 /// ```
 #[test]
 fn writes_bytes_to_the_standard_output() {
-    assert_eq!(run("p7"), "hi2.0");
+    assert_eq!(run("p7"), ("hi".to_string(), "2.0".to_string()));
 }
 
 /// Compile one fixture together with the runtime objects it leans on, link it
-/// against the runtime library, run it and hand back what it wrote.
-fn run(name: &str) -> String {
+/// against the runtime library, run it, and hand back what the program wrote
+/// and what it dataized to, which the runtime reports separately.
+fn run(name: &str) -> (String, String) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixtures = root.join("tests/fixtures");
     let documents: Vec<Xmir> = [
@@ -120,7 +122,9 @@ fn run(name: &str) -> String {
     assert!(linked.success(), "linking failed");
     let done = Command::new(&out).output().unwrap();
     assert!(done.status.success(), "{} exited badly", out.display());
-    String::from_utf8(done.stdout).unwrap().trim().to_string()
+    let written = String::from_utf8(done.stdout).unwrap();
+    let reported = String::from_utf8(done.stderr).unwrap();
+    (written.trim().to_string(), reported.trim().to_string())
 }
 
 /// Build the runtime and say where its library landed.

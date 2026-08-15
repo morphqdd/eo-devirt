@@ -11,10 +11,15 @@ use std::io::Write;
 /// How many arguments a system call may be handed.
 const ARGUMENTS: usize = 4;
 
-/// Write out a dataized number, the way the Java runtime prints one.
+/// Report a dataized number, the way the Java runtime reports one.
+///
+/// This goes to the error stream, not the output one. What a program writes
+/// for itself is its own, and the value it dataizes to is something the
+/// harness says about it, so the two must not run together. The Java runtime
+/// draws the same line.
 #[unsafe(no_mangle)]
 pub extern "C" fn eo_print(value: f64) {
-    let mut out = std::io::stdout().lock();
+    let mut out = std::io::stderr().lock();
     let _ = writeln!(out, "{value:?}");
     let _ = out.flush();
 }
