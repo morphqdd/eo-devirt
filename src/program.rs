@@ -6,6 +6,7 @@
 //! dot dispatches on a receiver computed at run time.
 
 use crate::xmir::{Element, Xmir};
+use std::collections::HashMap;
 
 /// How far the resolver follows decorators before it gives up, so that a cycle
 /// of objects decorating each other cannot spin forever.
@@ -68,8 +69,15 @@ impl Program {
         report
     }
 
-    /// Everything the program declares at the top level.
+    /// Everything the program declares at the top level, plus the formation
+    /// each object is declared in.
     fn resolver(&self) -> Resolver<'_> {
+        let mut nests = HashMap::new();
+        for document in &self.documents {
+            for object in &document.root().children {
+                nest(object, None, &mut nests);
+            }
+        }
         Resolver {
             globals: self
                 .documents
@@ -77,6 +85,7 @@ impl Program {
                 .flat_map(|document| document.root().children.iter())
                 .filter_map(|object| path(object).map(|path| (path, object)))
                 .collect(),
+            nests,
         }
     }
 }
@@ -131,8 +140,12 @@ enum Where<'a> {
 ///
 /// A top-level object carries its full path in `loc`, so an object declared in
 /// a package is known as `string.regex`, not just `regex`.
+///
+/// `nests` maps every object to the formation that declares it, which is what
+/// its `ρ` will be bound to.
 struct Resolver<'a> {
     globals: Vec<(String, &'a Element)>,
+    nests: HashMap<usize, &'a Element>,
 }
 
 impl<'a> Resolver<'a> {
@@ -291,7 +304,13 @@ impl<'a> Resolver<'a> {
     /// shape analysis will be able to use; until then the step is dynamic.
     fn step(&self, here: Where<'a>, name: &str, depth: usize) -> (Score, Where<'a>) {
         if name == "ρ" {
-            return (Score::Dynamic, Where::Runtime);
+            let Where::At(body) = here else {
+                return (Score::Dynamic, Where::Runtime);
+            };
+            return match self.nests.get(&(body as *const Element as usize)) {
+                Some(nest) => (Score::Resolved, Where::At(nest)),
+                None => (Score::Dynamic, Where::Runtime),
+            };
         }
         match here {
             Where::At(formation) => match self.attribute(formation, name, depth) {
@@ -381,6 +400,25 @@ fn tally(score: Score, name: &str, report: &mut Report) {
             report.unresolved += 1;
             report.missing.push(name.to_string());
         }
+    }
+}
+
+/// Note, for every object, the formation it is declared in. An application is
+/// not a formation, so what sits under it belongs to the formation above.
+fn nest<'a>(
+    element: &'a Element,
+    formation: Option<&'a Element>,
+    nests: &mut HashMap<usize, &'a Element>,
+) {
+    if let Some(formation) = formation {
+        nests.insert(element as *const Element as usize, formation);
+    }
+    let inner = match attribute(element, "base") {
+        Some(_) => formation,
+        None => Some(element),
+    };
+    for child in &element.children {
+        nest(child, inner, nests);
     }
 }
 

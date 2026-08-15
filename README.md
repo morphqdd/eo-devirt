@@ -9,12 +9,12 @@ transformation has an oracle.
 
 ## Status
 
-Stage 3 of 5: inlining. It does not work, see below.
+Stage 4 of 5: shapes.
 
 - [x] read and write XMIR without losing anything
 - [x] resolve `Φ.a.b` and `ξ.a` references, following decorators and packages
 - [x] inline the dispatches whose body is safe to move -- 3 of 9776
-- [ ] shape analysis, which everything now waits on
+- [x] work out the shape of `ρ`
 - [ ] a native backend
 
 ## Where the dispatch goes
@@ -23,9 +23,9 @@ Measured over the 171 XMIR files of `eo-runtime`, 11997 dispatch steps in all:
 
 | | steps | |
 |---|---|---|
-| resolved | 7303 (60.9%) | pinned to an object the program declares |
-| dynamic | 4567 (38.1%) | goes through a value that exists only at run time |
-| unresolved | 127 (1.1%) | named something not found |
+| resolved | 8789 (73.3%) | pinned to an object the program declares |
+| dynamic | 3017 (25.1%) | goes through a value that exists only at run time |
+| unresolved | 191 (1.6%) | named something not found |
 
 Reproduce with `cargo run --example resolve <dir-with-xmir>`.
 
@@ -34,10 +34,12 @@ analysis of shapes. The dynamic share is what stage 4 has to attack.
 
 What counts as what:
 
-- A step onto `ρ` is dynamic. `ρ` is the object a formation was dispatched
-  from, bound by the `dot` rule at reduction time. It is usually the enclosing
-  formation, but nothing in the program guarantees that, so it is not guessed
-  at here. This is the single largest dynamic group.
+- A step onto `ρ` resolves to the formation the body is declared in. The `dot`
+  rule binds `ρ` to the whole formation that held the attribute, and the `stay`
+  rule refuses to rebind an `ρ` that is already bound, so the shape of `ρ` is
+  fixed lexically no matter who does the dispatching. Only a top-level object
+  has none, its `ρ` being `Φ` itself. This is what took resolution from 60.9%
+  to 73.3%.
 - A step through a void is dynamic, though finding the void itself is not: the
   binding is exactly where the program says it is, only its value is not.
 - A step past an atom is dynamic. The `atom` attribute on a `λ` binding does
@@ -60,6 +62,15 @@ nodes and +0.7% of text, because a moved body brings its own dispatches with it.
 So inlining is not the lever. Everything routes back to `ρ`, which is also the
 largest dynamic group. Proving what `ρ` is at a given site is the next thing
 worth building, and it is shape analysis.
+
+## Known approximation
+
+The `dot` rule contextualizes a dispatched body against the formation *without*
+the binding being dispatched, so a `ξ` self-reference inside that body does not
+see the attribute it was reached by. This resolver contextualizes against the
+whole formation, so it will resolve such a self-reference where the calculus
+collapses it. Narrow, but it is a place where the numbers above read slightly
+high.
 
 ## Leftovers
 

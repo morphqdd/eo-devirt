@@ -27,8 +27,10 @@ fn resolves_an_object_declared_inside_a_package() {
     assert_eq!(report.unresolved(), 0);
 }
 
+/// The `dot` rule binds `ρ` to the formation holding the attribute, so a step
+/// onto it lands on the formation the body is declared in.
 #[test]
-fn counts_a_step_onto_the_parent_as_dynamic() {
+fn resolves_a_step_onto_the_parent() {
     let xmir = Xmir::parse(concat!(
         "<object><o name=\"a\"><o name=\"b\">",
         "<o base=\"ξ.ρ\" name=\"φ\"/>",
@@ -36,8 +38,8 @@ fn counts_a_step_onto_the_parent_as_dynamic() {
     ))
     .unwrap();
     let report = Program::from(vec![xmir]).resolve();
-    assert_eq!(report.dynamic(), 1);
-    assert_eq!(report.unresolved(), 0);
+    assert_eq!(report.resolved(), 1);
+    assert_eq!(report.dynamic(), 0);
 }
 
 #[test]
