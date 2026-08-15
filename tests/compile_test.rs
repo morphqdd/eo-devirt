@@ -81,6 +81,18 @@ fn writes_bytes_to_the_standard_output() {
     assert_eq!(run("p7"), ("hi".to_string(), "2.0".to_string()));
 }
 
+/// Zero is a value like any other. `p8` dataizes to it, and it is reported
+/// the same way every other value is, while the program itself writes nothing.
+///
+/// ```text
+/// $ eoc dataize p8
+/// [0x00000000-00000000-] = 0.0
+/// ```
+#[test]
+fn reports_a_result_of_zero() {
+    assert_eq!(run("p8"), (String::new(), "0.0".to_string()));
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it, and hand back what the program wrote
 /// and what it dataized to, which the runtime reports separately.
