@@ -4,18 +4,6 @@ An ahead-of-time compiler for EO. It reads XMIR, works out where each attribute
 dispatch lands, and emits native code, spending what it worked out on direct
 instructions instead of a lookup at run time.
 
-## Status
-
-Stage 5 of 5: a native backend, one slice of it.
-
-- [x] read and write XMIR without losing anything
-- [x] resolve `Φ.a.b` and `ξ.a` references, following decorators and packages
-- [x] inline the dispatches whose body is safe to move -- 3 of 9776
-- [x] work out the shape of `ρ`, of arguments, and of atom results
-- [x] compile constant arithmetic to a native binary
-- [ ] the object model: slots, laziness, allocation
-- [ ] the runtime: dispatch, dataize, the 25 atoms
-
 ## Compiling
 
 `(2.plus 3).plus 4` in EO, through XMIR and the resolver, into an object file
@@ -61,8 +49,8 @@ Measured over the 171 XMIR files of `eo-runtime`, 11997 dispatch steps in all:
 
 Reproduce with `cargo run --example resolve <dir-with-xmir>`.
 
-Three fifths of all dispatch comes off with plain name resolution, before any
-analysis of shapes. The dynamic share is what stage 4 has to attack.
+Three quarters of all dispatch is pinned down. The dynamic quarter is what a
+run-time lookup has to carry.
 
 What counts as what:
 
@@ -70,8 +58,8 @@ What counts as what:
   rule binds `ρ` to the whole formation that held the attribute, and the `stay`
   rule refuses to rebind an `ρ` that is already bound, so the shape of `ρ` is
   fixed lexically no matter who does the dispatching. Only a top-level object
-  has none, its `ρ` being `Φ` itself. This is what took resolution from 60.9%
-  to 73.3%.
+  has none, its `ρ` being `Φ` itself. This one rule accounts for most of what
+  is resolved.
 - A step through a void is dynamic, though finding the void itself is not: the
   binding is exactly where the program says it is, only its value is not.
 - A step past an atom follows the shape its native code produces, which the
@@ -102,22 +90,6 @@ So inlining is not the lever. Everything routes back to `ρ`, which is also the
 largest dynamic group. Proving what `ρ` is at a given site is the next thing
 worth building, and it is shape analysis.
 
-## What paid and what did not
-
-Stage 4 took resolution from 60.9% to 75.5% and the dynamic share from 38.1%
-to 23.8%. The gains were lopsided:
-
-| change | resolved |
-|---|---|
-| the shape of `ρ`, read off the `dot` and `stay` rules | 60.9% -> 73.3% |
-| carrying argument shapes into voids, by fixpoint | 73.3% -> 73.4% |
-| taking the receiver of a leading-dot dispatch | 73.4% -> 74.7% |
-| following the declared result of an atom | 74.7% -> 75.5% |
-
-The fixpoint over arguments is the most machinery in this stage and bought the
-least of it. On this corpus most calls are library calls whose arguments differ
-between sites; it may pay better on application code, which is why it stays.
-
 ## Known approximation
 
 The `dot` rule contextualizes a dispatched body against the formation *without*
@@ -129,21 +101,21 @@ high.
 
 ## Leftovers
 
-The 1.1% that is neither is not yet explained. The obvious guess, that these are
+The 0.7% that is neither is not yet explained. The obvious guess, that these are
 dispatches past atoms, is wrong: the rule for that case fires zero times on this
 corpus and moved none of them.
 
 ## The round-trip guarantee
 
-Losing information silently is the one failure this stage must not have, so the
-reader refuses everything it does not model: mixed content, CDATA, processing
+Losing information silently is the one failure the reader must not have, so it
+refuses everything it does not model: mixed content, CDATA, processing
 instructions, comments inside the tree, unknown entities. What it accepts, it
 models in full, and the test asserts that parsing the printed form gives back an
 equal document.
 
 Known limitation: attribute values are kept exactly as written, escapes and all.
 Round-tripping is unaffected, since they are written back the same way, but
-whoever starts comparing `base` values in stage 2 has to unescape them first.
+whoever compares `base` values has to unescape them first.
 
 Run it against a whole parsed code base:
 
