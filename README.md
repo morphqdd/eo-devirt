@@ -40,6 +40,14 @@ Asking one for an attribute is `eo_dispatch`, a search of that shape while the
 program runs -- the lookup this whole compiler exists to avoid, kept for the
 quarter of dispatch that cannot be worked out ahead of time.
 
+A local names one object however often it is mentioned, so it is built at the
+first mention and reused after. Building it again would make a second object,
+with its own slots and its own work to redo, and where an attribute does
+something -- writes, say -- the program would do it twice. The block it was
+built in is remembered too: CLIR is in SSA form, so a value may only be used
+where its definition dominates, which the same block always does and another
+may not.
+
 An attribute is a body, not a value. Making an object costs one allocation and
 nothing else: the slots start empty, and an attribute runs the first time
 something asks for it, with the object as what it was dispatched from. The

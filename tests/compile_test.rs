@@ -122,6 +122,20 @@ fn leaves_an_attribute_alone_until_it_is_asked_for() {
     assert_eq!(run("p13"), (String::new(), "1.0".to_string()));
 }
 
+/// A local names one object however often it is mentioned. `p14` mentions one
+/// twice and asks it both times for an attribute that writes a letter, so the
+/// letter appears once and the two answers add up.
+///
+/// ```text
+/// $ eoc dataize p14
+/// x
+/// [0x40000000-00000000-] = 2.0
+/// ```
+#[test]
+fn builds_a_local_once_however_often_it_is_mentioned() {
+    assert_eq!(run("p14"), ("x".to_string(), "2.0".to_string()));
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it, and hand back what the program wrote
 /// and what it dataized to, which the runtime reports separately.
