@@ -1,11 +1,16 @@
 # eo-devirt
 
-A devirtualizer for EO programs: it reads XMIR, resolves the attribute
-dispatches it can resolve statically, and writes XMIR back out.
+An ahead-of-time compiler for EO. It reads XMIR, works out where each attribute
+dispatch lands, and emits native code, spending what it worked out on direct
+instructions instead of a lookup at run time.
 
-Keeping the same format on both ends is the point. A transformed program can be
-fed back into the normal EO build and compared against the original, so every
-transformation has an oracle.
+It started as an XMIR-to-XMIR devirtualizer, on the argument that keeping the
+same format on both ends gives every transformation an oracle. That path is
+still here and still works, but it turned out to carry almost nothing: XMIR has
+no way to say "call this body directly", so the only way to spend a resolved
+dispatch is to move the body, and moving a body is nearly always unsound. Three
+sites out of 9776. The analysis pays off in code generation instead, and the
+oracle had to be given up along with the format.
 
 ## Status
 
@@ -39,10 +44,18 @@ instruction. No object graph, no laziness, no allocation, because a constant
 expression needs none of them. Everything else is refused with a message rather
 than guessed at.
 
-There is no oracle here. Stages 1 to 4 kept XMIR on both sides, so a transformed
-program could be checked against the original. A binary cannot be checked that
-way, and the differential test against the Java runtime is not built yet: the 9
-above was worked out by hand.
+The oracle is `eoc dataize`, which runs the same source through the Java
+runtime. Comparing against it is the only check a binary can have, the format
+no longer being the same on both ends:
+
+```text
+$ eoc dataize p1
+[0x40220000-00000000-] = 9.0
+```
+
+The binary exits with 9, which agrees. That comparison holds only while the
+answer is a small whole number, an exit code being one byte; past that the
+value has to be printed, and printing needs a runtime this does not have yet.
 
 ## Where the dispatch goes
 
