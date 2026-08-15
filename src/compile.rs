@@ -16,8 +16,38 @@ use cranelift_module::{FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 
-/// What every filled void holds.
-type Env = HashMap<usize, Val>;
+/// What is known while one function is being built.
+#[derive(Default)]
+struct Env {
+    /// What every filled void holds.
+    filled: HashMap<usize, Val>,
+    /// What every local already built came to, and the block it was built in.
+    ///
+    /// A local names one object however often it is mentioned, so building it
+    /// again would make a second one, with its own slots and its own work to
+    /// redo. The block is kept because CLIR is in SSA form: a value may only
+    /// be used where its definition dominates, which the same block always
+    /// does and another block may not, so a local first built inside one arm
+    /// of a branch is built again in the other rather than borrowed across.
+    built: HashMap<usize, (cranelift_codegen::ir::Block, Val)>,
+}
+
+impl Env {
+    /// Start with nothing known.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bind a void.
+    fn insert(&mut self, void: usize, value: Val) {
+        self.filled.insert(void, value);
+    }
+
+    /// What a void was bound to.
+    fn get(&self, void: &usize) -> Option<&Val> {
+        self.filled.get(void)
+    }
+}
 
 /// One value a compiled program holds.
 ///
@@ -296,7 +326,7 @@ impl<'a> Unit<'a> {
             return held(void, env);
         }
         if let Some(local) = local(base, frame.scope) {
-            return self.emit(builder, local, frame.inner(), env);
+            return self.built(builder, local, frame, env);
         }
         if base.rsplit('.').next() == Some("if") {
             return self.branch(builder, element, base, frame, env);
@@ -349,30 +379,29 @@ impl<'a> Unit<'a> {
             .rsplit('.')
             .next()
             .ok_or_else(|| format!("{base} names nothing"))?;
+        let got = self.receiver(builder, element, base, frame, env)?;
         if wanted == "as-bytes" || wanted == "code" {
-            return self.receiver(builder, element, base, frame, env);
+            return Ok(got);
         }
-        if wanted == "size"
-            && let Val::Bytes { size, .. } = self.receiver(builder, element, base, frame, env)?
-        {
-            return Ok(Val::Number(builder.ins().fcvt_from_sint(types::F64, size)));
+        if let Val::Bytes { size, .. } = got {
+            if wanted == "size" {
+                return Ok(Val::Number(builder.ins().fcvt_from_sint(types::F64, size)));
+            }
+            return Err(format!("bytes have no {wanted}"));
         }
-        if let Val::Object(object) = self.receiver(builder, element, base, frame, env)? {
-            return self.lookup(builder, object, wanted);
-        }
-        let Where::At(target) =
-            self.resolver
-                .lands(None, &format!("Φ.number.{wanted}"), Where::Nowhere, 0)
-        else {
-            return Err(format!("{base} does not land anywhere known"));
+        let numeric = self
+            .resolver
+            .lands(None, &format!("Φ.number.{wanted}"), Where::Nowhere, 0);
+        let Where::At(target) = numeric else {
+            return match got {
+                Val::Object(object) => self.lookup(builder, object, wanted),
+                _ => Err(format!("{base} does not land anywhere known")),
+            };
         };
-        let value = self
-            .receiver(builder, element, base, frame, env)?
-            .number()?;
+        let value = self.unboxed(builder, got)?;
         if let Some(op) = attribute(target, "loc").and_then(instruction) {
-            let right = self
-                .emit(builder, argument(element, 0)?, frame.inner(), env)?
-                .number()?;
+            let right = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
+            let right = self.unboxed(builder, right)?;
             return Ok(Val::Number(self.operate(builder, op, value, right)));
         }
         self.call(builder, element, target, &[value], frame, env)
@@ -461,6 +490,28 @@ impl<'a> Unit<'a> {
                 Kind::Number => types::F64,
             },
         )
+    }
+
+    /// Build a local, or hand back what it came to when it was built already
+    /// in the block being built now.
+    fn built(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        local: &'a Element,
+        frame: Frame<'a>,
+        env: &mut Env,
+    ) -> Result<Val, String> {
+        let here = builder
+            .current_block()
+            .ok_or("a local built outside any block")?;
+        if let Some((block, value)) = env.built.get(&address(local))
+            && *block == here
+        {
+            return Ok(*value);
+        }
+        let value = self.emit(builder, local, frame.inner(), env)?;
+        env.built.insert(address(local), (here, value));
+        Ok(value)
     }
 
     /// Build an object: room of its shape, and nothing put in it.
@@ -899,9 +950,33 @@ impl<'a> Unit<'a> {
         let (head, _) = base
             .rsplit_once('.')
             .ok_or_else(|| format!("{base} dispatches on nothing"))?;
-        match void(head, frame.scope) {
-            Some(void) => held(void, env),
-            None => Err(format!("{head} is not a receiver this compiles")),
+        self.along(builder, head, frame, env)
+    }
+
+    /// The value a chain names, walked from its start.
+    ///
+    /// A chain of more than one step has to be taken a step at a time: the
+    /// start is a void or a local, and each step after it is a dispatch on
+    /// whatever the step before came to.
+    fn along(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        base: &str,
+        frame: Frame<'a>,
+        env: &mut Env,
+    ) -> Result<Val, String> {
+        if let Some(void) = void(base, frame.scope) {
+            return held(void, env);
+        }
+        if let Some(local) = local(base, frame.scope) {
+            return self.built(builder, local, frame, env);
+        }
+        let (head, last) = base
+            .rsplit_once('.')
+            .ok_or_else(|| format!("{base} is not a receiver this compiles"))?;
+        match self.along(builder, head, frame, env)? {
+            Val::Object(object) => self.lookup(builder, object, last),
+            _ => Err(format!("{head} is not an object to ask for {last}")),
         }
     }
 
