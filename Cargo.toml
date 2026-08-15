@@ -14,3 +14,10 @@ cranelift-module = "0.134.3"
 cranelift-object = "0.134.3"
 quick-xml = "0.41.0"
 target-lexicon = "0.13.5"
+
+[[bench]]
+name = "fibo"
+harness = false
+
+[dev-dependencies]
+divan = "0.1.21"
