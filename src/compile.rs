@@ -990,11 +990,15 @@ impl<'a> Unit<'a> {
         env: &mut Env,
     ) -> Result<Val, String> {
         let mut handed = prefix.to_vec();
-        for slot in 0..voids(formation).len().saturating_sub(prefix.len()) {
-            handed.push(
-                self.emit(builder, argument(element, slot)?, frame.inner(), env)?
-                    .number()?,
-            );
+        let wanted = voids(formation).len().saturating_sub(prefix.len());
+        for slot in 0..wanted {
+            let Ok(arg) = argument(element, slot) else {
+                return Err(format!(
+                    "{} is handed {slot} of the {wanted} it takes, which is an object with a void left in it",
+                    attribute(formation, "loc").unwrap_or("something")
+                ));
+            };
+            handed.push(self.emit(builder, arg, frame.inner(), env)?.number()?);
         }
         let id = self.declare(formation)?;
         let callee = self.module.declare_func_in_func(id, builder.func);
