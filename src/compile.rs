@@ -170,7 +170,7 @@ impl Program {
             .documents
             .iter()
             .flat_map(|document| document.root().children.iter())
-            .find(|object| attribute(object, "loc") == Some(locator))
+            .find_map(|object| at(object, locator))
             .ok_or_else(|| format!("no object at {locator}"))?;
         let body = child(object, "φ").ok_or_else(|| format!("{locator} has no φ"))?;
         let mut flags = settings::builder();
@@ -1135,6 +1135,14 @@ fn raw(element: &Element) -> Option<Vec<u8>> {
         .iter()
         .find(|child| attribute(child, "as") == Some("α0"))
         .and_then(raw)
+}
+
+/// The object one locator names, however deep it sits.
+fn at<'a>(element: &'a Element, locator: &str) -> Option<&'a Element> {
+    if attribute(element, "loc") == Some(locator) {
+        return Some(element);
+    }
+    element.children.iter().find_map(|child| at(child, locator))
 }
 
 /// Whether a formation is one to hold rather than to apply: it declares no
