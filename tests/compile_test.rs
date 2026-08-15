@@ -1,4 +1,4 @@
-use eo_devirt::{Program, Xmir};
+use eo2bin::{Program, Xmir};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -121,7 +121,7 @@ fn run(name: &str) -> (String, String) {
     let object = Program::from(documents)
         .compile(&format!("Φ.{name}"))
         .unwrap();
-    let out = std::env::temp_dir().join(format!("eo-devirt-{name}"));
+    let out = std::env::temp_dir().join(format!("eo2bin-{name}"));
     let unit = out.with_extension("o");
     fs::write(&unit, object).unwrap();
     let linked = Command::new("cc")

@@ -1,4 +1,4 @@
-use eo_devirt::{Program, Xmir};
+use eo2bin::{Program, Xmir};
 
 #[test]
 fn counts_a_step_onto_the_result_of_an_atom_as_dynamic() {

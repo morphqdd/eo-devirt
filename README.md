@@ -1,4 +1,4 @@
-# eo-devirt
+# eo2bin
 
 An ahead-of-time compiler for EO. It reads XMIR, works out where each attribute
 dispatch lands, and emits native code, spending what it worked out on direct

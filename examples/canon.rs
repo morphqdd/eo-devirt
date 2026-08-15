@@ -1,6 +1,6 @@
 //! Print the canonical form of an XMIR file, for debugging round-trip failures.
 
-use eo_devirt::Xmir;
+use eo2bin::Xmir;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: canon <file.xmir>");
