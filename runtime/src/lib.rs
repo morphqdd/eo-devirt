@@ -5,6 +5,7 @@
 //! system through libc, which is also the route Windows will need, having no
 //! stable syscall numbering of its own.
 
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::io::Write;
 
@@ -66,6 +67,100 @@ pub unsafe extern "C" fn eo_posix(
         },
         other => refuse(other),
     }
+}
+
+// Where objects live. They are never freed: a program that runs to an answer
+// and stops does not need them to be, and freeing them properly means knowing
+// which are still reachable, which is a question this does not answer yet.
+thread_local! {
+    static ARENA: RefCell<Vec<Box<[u64]>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// An object is a shape and then one slot per attribute the shape names.
+///
+/// The slot at index `i` holds whatever the attribute named at `i` in the
+/// shape is bound to. A number carries its value in the first slot instead,
+/// its shape naming nothing.
+const HEADER: usize = 2;
+
+/// Where a number keeps itself, in the slot after the header.
+const DATUM: usize = 1;
+
+/// Make an object of one shape, with room for what the shape names.
+///
+/// A shape is a run of words the compiler laid down: how many attributes, then
+/// their names. It is read here and never written, so two objects of a kind
+/// share one and nothing is copied.
+///
+/// # Safety
+///
+/// Called from generated code, which passes a shape it laid down itself.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eo_make(shape: *const u64) -> *mut u64 {
+    let count = unsafe { *shape } as usize;
+    let mut room = vec![0u64; HEADER + count].into_boxed_slice();
+    room[0] = shape as u64;
+    let at = room.as_mut_ptr();
+    ARENA.with(|arena| arena.borrow_mut().push(room));
+    at
+}
+
+/// Bind an attribute of an object, by the place its name sits in the shape.
+///
+/// # Safety
+///
+/// Called from generated code, which fills only slots the shape names.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eo_fill(object: *mut u64, slot: usize, value: *const u64) {
+    unsafe { *object.add(HEADER + slot) = value as u64 };
+}
+
+/// Wrap a number so it can be held where an object is held.
+#[unsafe(no_mangle)]
+pub extern "C" fn eo_number(value: f64) -> *mut u64 {
+    let mut room = vec![0u64; HEADER + DATUM].into_boxed_slice();
+    room[0] = 0;
+    room[HEADER] = value.to_bits();
+    let at = room.as_mut_ptr();
+    ARENA.with(|arena| arena.borrow_mut().push(room));
+    at
+}
+
+/// The number an object is, when it is one.
+///
+/// # Safety
+///
+/// Called from generated code with an object it made.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eo_as_number(object: *const u64) -> f64 {
+    if unsafe { *object } != 0 {
+        refuse("asking for the number of something that is not one");
+    }
+    f64::from_bits(unsafe { *object.add(HEADER) })
+}
+
+/// Find what an object binds under a name, the name being a number the
+/// compiler interned.
+///
+/// This is the lookup the whole compiler exists to avoid: it runs only where
+/// the shape of the object could not be worked out ahead of time.
+///
+/// # Safety
+///
+/// Called from generated code with an object it made.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eo_dispatch(object: *const u64, name: u64) -> *const u64 {
+    let shape = unsafe { *object } as *const u64;
+    if shape.is_null() {
+        refuse("dispatching on a number");
+    }
+    let count = unsafe { *shape } as usize;
+    for slot in 0..count {
+        if unsafe { *shape.add(1 + slot) } == name {
+            return unsafe { *object.add(HEADER + slot) } as *const u64;
+        }
+    }
+    refuse("an attribute the object does not have")
 }
 
 /// Stop, saying what was asked for and could not be done.
