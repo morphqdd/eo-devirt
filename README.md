@@ -9,13 +9,40 @@ transformation has an oracle.
 
 ## Status
 
-Stage 4 of 5: shapes.
+Stage 5 of 5: a native backend, one slice of it.
 
 - [x] read and write XMIR without losing anything
 - [x] resolve `Φ.a.b` and `ξ.a` references, following decorators and packages
 - [x] inline the dispatches whose body is safe to move -- 3 of 9776
-- [x] work out the shape of `ρ`
-- [ ] a native backend
+- [x] work out the shape of `ρ`, of arguments, and of atom results
+- [x] compile constant arithmetic to a native binary
+- [ ] the object model: slots, laziness, allocation
+- [ ] the runtime: dispatch, dataize, the 25 atoms
+
+## Compiling
+
+`(2.plus 3).plus 4` in EO, through XMIR and the resolver, into an object file
+that links with `cc` and exits with 9:
+
+```
+main:
+  movabs $0x4000000000000000,%rsi   # 2.0
+  movq   %rsi,%xmm4
+  addsd  0x55(%rip),%xmm4           # 3.0
+  addsd  0x5d(%rip),%xmm4           # 4.0
+  cvttsd2si %xmm4,%eax
+```
+
+This is the arithmetic slice and nothing more: expressions the resolver pinned
+down completely, made of number literals and the atoms that are one
+instruction. No object graph, no laziness, no allocation, because a constant
+expression needs none of them. Everything else is refused with a message rather
+than guessed at.
+
+There is no oracle here. Stages 1 to 4 kept XMIR on both sides, so a transformed
+program could be checked against the original. A binary cannot be checked that
+way, and the differential test against the Java runtime is not built yet: the 9
+above was worked out by hand.
 
 ## Where the dispatch goes
 

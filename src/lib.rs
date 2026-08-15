@@ -1,5 +1,6 @@
 //! A devirtualizer for EO programs, working on XMIR in and XMIR out.
 
+mod compile;
 mod program;
 mod xmir;
 

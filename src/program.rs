@@ -19,7 +19,7 @@ const ROUNDS: usize = 8;
 
 /// A whole program: every XMIR document that makes it up.
 pub struct Program {
-    documents: Vec<Xmir>,
+    pub(crate) documents: Vec<Xmir>,
 }
 
 /// How much of the program's dispatch was pinned down.
@@ -76,7 +76,7 @@ impl Program {
 
     /// Everything the program declares at the top level, plus the formation
     /// each object is declared in.
-    fn resolver(&self) -> Resolver<'_> {
+    pub(crate) fn resolver(&self) -> Resolver<'_> {
         let mut nests = HashMap::new();
         for document in &self.documents {
             for object in &document.root().children {
@@ -146,7 +146,7 @@ enum Score {
 
 /// Where a chain has got to.
 #[derive(Clone, Copy)]
-enum Where<'a> {
+pub(crate) enum Where<'a> {
     /// On an object the program declares.
     At(&'a Element),
     /// On something whose value only exists at run time: a void, or a receiver
@@ -175,7 +175,7 @@ enum Shape<'a> {
 /// holds the names dispatched by applications we could not resolve: such an
 /// application can fill the voids of any body bound under that name, so those
 /// voids stay open however well the visible call sites agree.
-struct Resolver<'a> {
+pub(crate) struct Resolver<'a> {
     globals: Vec<(String, &'a Element)>,
     nests: HashMap<usize, &'a Element>,
     shapes: HashMap<usize, Shape<'a>>,
@@ -484,7 +484,7 @@ impl<'a> Resolver<'a> {
 
     /// Where a chain lands, knowing which element carries it so that a
     /// leading-dot dispatch can see its receiver.
-    fn lands(
+    pub(crate) fn lands(
         &self,
         element: Option<&'a Element>,
         base: &str,
@@ -637,7 +637,7 @@ fn path(object: &Element) -> Option<String> {
 }
 
 /// The attribute a formation binds under this name.
-fn child<'a>(formation: &'a Element, name: &str) -> Option<&'a Element> {
+pub(crate) fn child<'a>(formation: &'a Element, name: &str) -> Option<&'a Element> {
     formation.children.iter().find(|child| named(child, name))
 }
 
@@ -647,7 +647,7 @@ fn named(element: &Element, name: &str) -> bool {
 }
 
 /// The value of a named attribute, if the element carries it.
-fn attribute<'a>(element: &'a Element, name: &str) -> Option<&'a str> {
+pub(crate) fn attribute<'a>(element: &'a Element, name: &str) -> Option<&'a str> {
     element
         .attributes
         .iter()
