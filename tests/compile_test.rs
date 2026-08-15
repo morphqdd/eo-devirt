@@ -26,13 +26,22 @@ fn compiles_constant_arithmetic_into_a_binary_that_exits_with_the_result() {
 /// and report the exit code.
 fn run(name: &str) -> i32 {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let documents: Vec<Xmir> = [name, "number", "bytes"]
-        .iter()
-        .map(|each| {
-            let text = fs::read_to_string(fixtures.join(format!("{each}.xmir"))).unwrap();
-            Xmir::parse(&text).unwrap()
-        })
-        .collect();
+    let documents: Vec<Xmir> = [
+        name,
+        "number",
+        "bytes",
+        "bool",
+        "number/lt",
+        "number/minus",
+        "number/neg",
+        "dataized",
+    ]
+    .iter()
+    .map(|each| {
+        let text = fs::read_to_string(fixtures.join(format!("{each}.xmir"))).unwrap();
+        Xmir::parse(&text).unwrap()
+    })
+    .collect();
     let object = Program::from(documents)
         .compile(&format!("Φ.{name}"))
         .unwrap();
@@ -61,4 +70,19 @@ fn run(name: &str) -> i32 {
 #[test]
 fn compiles_a_formation_applied_to_a_literal() {
     assert_eq!(run("p2"), 42);
+}
+
+/// Recursion and branching. `p4` is `fibo 6` where `fibo` calls itself twice
+/// and picks a branch with `if`, so the formation has to become a real
+/// function and the branches must not both be evaluated.
+///
+/// The 8 comes from the Java runtime:
+///
+/// ```text
+/// $ eoc dataize p4
+/// [0x40200000-00000000-] = 8.0
+/// ```
+#[test]
+fn compiles_a_recursive_object() {
+    assert_eq!(run("p4"), 8);
 }
