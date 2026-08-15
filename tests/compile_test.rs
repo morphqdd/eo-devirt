@@ -19,16 +19,24 @@ use std::process::Command;
 /// printed, which needs the runtime this does not have yet.
 #[test]
 fn compiles_constant_arithmetic_into_a_binary_that_exits_with_the_result() {
+    assert_eq!(run("p1"), 9);
+}
+
+/// Compile one fixture together with the runtime objects it leans on, link it
+/// and report the exit code.
+fn run(name: &str) -> i32 {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let documents: Vec<Xmir> = ["p1", "number", "bytes"]
+    let documents: Vec<Xmir> = [name, "number", "bytes"]
         .iter()
-        .map(|name| {
-            let text = fs::read_to_string(fixtures.join(format!("{name}.xmir"))).unwrap();
+        .map(|each| {
+            let text = fs::read_to_string(fixtures.join(format!("{each}.xmir"))).unwrap();
             Xmir::parse(&text).unwrap()
         })
         .collect();
-    let object = Program::from(documents).compile("Φ.p1").unwrap();
-    let out = std::env::temp_dir().join("eo-devirt-p1");
+    let object = Program::from(documents)
+        .compile(&format!("Φ.{name}"))
+        .unwrap();
+    let out = std::env::temp_dir().join(format!("eo-devirt-{name}"));
     let unit = out.with_extension("o");
     fs::write(&unit, object).unwrap();
     let linked = Command::new("cc")
@@ -38,5 +46,19 @@ fn compiles_constant_arithmetic_into_a_binary_that_exits_with_the_result() {
         .status()
         .unwrap();
     assert!(linked.success(), "linking failed");
-    assert_eq!(Command::new(&out).status().unwrap().code(), Some(9));
+    Command::new(&out).status().unwrap().code().unwrap()
+}
+
+/// A formation applied to a literal. `p2` declares `twice(x) = x.plus x` and
+/// applies it to 21, so the argument has to reach the body.
+///
+/// The 42 comes from the Java runtime:
+///
+/// ```text
+/// $ eoc dataize p2
+/// [0x40450000-00000000-] = 42.0
+/// ```
+#[test]
+fn compiles_a_formation_applied_to_a_literal() {
+    assert_eq!(run("p2"), 42);
 }
