@@ -89,8 +89,21 @@ impl Val {
 enum Kind {
     /// A number, which travels unboxed.
     Number,
+    /// Bytes, which travel as two words: where they start and how many.
+    Bytes,
     /// An object, which travels as a pointer.
     Object,
+}
+
+impl Kind {
+    /// What a value of this kind is carried in.
+    const fn carried(self) -> &'static [types::Type] {
+        match self {
+            Self::Number => &[types::F64],
+            Self::Bytes => &[types::I64, types::I64],
+            Self::Object => &[types::I64],
+        }
+    }
 }
 
 /// Where in the program one expression is being built.
@@ -271,7 +284,7 @@ impl<'a> Unit<'a> {
         let voids = voids(formation);
         let mut context = self.module.make_context();
         context.func.signature = self.signature(formation)?;
-        let boxing = self.gives(formation)? == types::I64;
+        let gives = self.gives(formation)?;
         let mut shell = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut shell);
         let entry = builder.create_block();
@@ -279,11 +292,22 @@ impl<'a> Unit<'a> {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         let mut env = Env::new();
-        for (slot, void) in voids.iter().enumerate() {
+        let mut word = 0;
+        for void in &voids {
+            let taken = self.takes(void);
+            let words = builder.block_params(entry);
             env.insert(
                 address(void),
-                Val::Number(builder.block_params(entry)[slot]),
+                match taken {
+                    Kind::Bytes => Val::Bytes {
+                        at: words[word],
+                        size: words[word + 1],
+                    },
+                    Kind::Object => Val::Object(words[word]),
+                    Kind::Number => Val::Number(words[word]),
+                },
             );
+            word += taken.carried().len();
         }
         let body = child(formation, "φ").ok_or("a formation with no φ was applied")?;
         let value = self.emit(
@@ -295,12 +319,12 @@ impl<'a> Unit<'a> {
             },
             &mut env,
         )?;
-        let handed = if boxing {
-            self.boxed(&mut builder, value)?
-        } else {
-            value.number()?
+        let handed = match (gives, value) {
+            (Kind::Bytes, Val::Bytes { at, size }) => vec![at, size],
+            (Kind::Object, _) => vec![self.boxed(&mut builder, value)?],
+            _ => vec![self.unboxed(&mut builder, value)?],
         };
-        builder.ins().return_(&[handed]);
+        builder.ins().return_(&handed);
         builder.finalize(self.frontend);
         self.module
             .define_function(id, &mut context)
@@ -549,8 +573,11 @@ impl<'a> Unit<'a> {
         if frame.depth > DEPTH {
             return Ok(Kind::Number);
         }
-        if element.text.is_some() {
-            return Ok(Kind::Number);
+        if let Some(text) = &element.text {
+            return Ok(match raw_of(text).map(|raw| raw.len()) {
+                Some(8) | None => Kind::Number,
+                Some(_) => Kind::Bytes,
+            });
         }
         let Some(base) = attribute(element, "base") else {
             return Ok(Kind::Object);
@@ -576,9 +603,11 @@ impl<'a> Unit<'a> {
         if plain(target) {
             return Ok(Kind::Object);
         }
+        if attribute(target, "loc") == Some("Φ.string") {
+            return Ok(Kind::Bytes);
+        }
         if attribute(target, "loc").and_then(instruction).is_some()
             || attribute(target, "loc") == Some("Φ.posix")
-            || attribute(target, "loc") == Some("Φ.string")
         {
             return Ok(Kind::Number);
         }
@@ -591,19 +620,29 @@ impl<'a> Unit<'a> {
         }
     }
 
+    /// What kind of value fills one void.
+    ///
+    /// The shapes worked out earlier say what every call site put in. A void
+    /// nobody agreed on takes a number, which is what most of them are.
+    fn takes(&self, void: &'a Element) -> Kind {
+        match self
+            .resolver
+            .shape_of(void)
+            .and_then(|shape| attribute(shape, "loc"))
+        {
+            Some("Φ.string") => Kind::Bytes,
+            _ => Kind::Number,
+        }
+    }
+
     /// What kind of value the function standing for a formation hands back.
-    fn gives(&self, formation: &'a Element) -> Result<types::Type, String> {
+    fn gives(&self, formation: &'a Element) -> Result<Kind, String> {
         let body = child(formation, "φ").ok_or("a formation with no φ was applied")?;
-        Ok(
-            match self.kind(
-                body,
-                Frame {
-                    scope: Where::At(formation),
-                    depth: 0,
-                },
-            )? {
-                Kind::Object => types::I64,
-                Kind::Number => types::F64,
+        self.kind(
+            body,
+            Frame {
+                scope: Where::At(formation),
+                depth: 0,
             },
         )
     }
@@ -794,6 +833,9 @@ impl<'a> Unit<'a> {
     }
 
     /// Take a number back out of an object.
+    ///
+    /// Bytes are refused: they are two words, so where one value is wanted
+    /// there is nothing to hand back.
     fn unboxed(&mut self, builder: &mut FunctionBuilder<'_>, value: Val) -> Result<Value, String> {
         match value {
             Val::Object(at) => {
@@ -1048,21 +1090,25 @@ impl<'a> Unit<'a> {
                 ));
             };
             let value = self.emit(builder, arg, frame.inner(), env)?;
-            handed.push(value.number().map_err(|_| {
-                format!(
-                    "{} is handed bytes, and a function carries only numbers",
-                    attribute(formation, "loc").unwrap_or("something")
-                )
-            })?);
+            match value {
+                Val::Bytes { at, size } => {
+                    handed.push(at);
+                    handed.push(size);
+                }
+                other => handed.push(self.unboxed(builder, other)?),
+            }
         }
         let id = self.declare(formation)?;
         let callee = self.module.declare_func_in_func(id, builder.func);
         let call = builder.ins().call(callee, &handed);
-        let given = builder.inst_results(call)[0];
-        Ok(if self.gives(formation)? == types::I64 {
-            Val::Object(given)
-        } else {
-            Val::Number(given)
+        let given = builder.inst_results(call);
+        Ok(match self.gives(formation)? {
+            Kind::Bytes => Val::Bytes {
+                at: given[0],
+                size: given[1],
+            },
+            Kind::Object => Val::Object(given[0]),
+            Kind::Number => Val::Number(given[0]),
         })
     }
 
@@ -1149,12 +1195,14 @@ impl<'a> Unit<'a> {
         formation: &'a Element,
     ) -> Result<cranelift_codegen::ir::Signature, String> {
         let mut signature = self.module.make_signature();
-        for _ in 0..voids(formation).len() {
-            signature.params.push(AbiParam::new(types::F64));
+        for void in voids(formation) {
+            for each in self.takes(void).carried() {
+                signature.params.push(AbiParam::new(*each));
+            }
         }
-        signature
-            .returns
-            .push(AbiParam::new(self.gives(formation)?));
+        for each in self.gives(formation)?.carried() {
+            signature.returns.push(AbiParam::new(*each));
+        }
         Ok(signature)
     }
 
@@ -1180,19 +1228,23 @@ fn text(element: &Element) -> Option<String> {
     String::from_utf8(raw(element)?).ok()
 }
 
+/// The bytes one datum is written as.
+fn raw_of(hex: &str) -> Option<Vec<u8>> {
+    hex.trim()
+        .split('-')
+        .filter(|byte| !byte.is_empty())
+        .map(|byte| u8::from_str_radix(byte, 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .ok()
+}
+
 /// The datum an expression wraps, however many wrappers deep.
 ///
 /// A single byte is written with a dash after it, `78-`, and empty bytes as
 /// `--`, so the pieces between dashes can be empty and are passed over.
 fn raw(element: &Element) -> Option<Vec<u8>> {
     if let Some(hex) = &element.text {
-        return hex
-            .trim()
-            .split('-')
-            .filter(|byte| !byte.is_empty())
-            .map(|byte| u8::from_str_radix(byte, 16))
-            .collect::<Result<Vec<u8>, _>>()
-            .ok();
+        return raw_of(hex);
     }
     element
         .children
