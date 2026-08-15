@@ -6,23 +6,36 @@ instructions instead of a lookup at run time.
 
 ## Compiling
 
-`(2.plus 3).plus 4` in EO, through XMIR and the resolver, into an object file
-that links with `cc` and exits with 9:
+`fibo 6` in EO, through XMIR and the resolver, into an object file that links
+with `cc` and writes `8.0`:
 
 ```
-main:
-  movabs $0x4000000000000000,%rsi   # 2.0
-  movq   %rsi,%xmm4
-  addsd  0x55(%rip),%xmm4           # 3.0
-  addsd  0x5d(%rip),%xmm4           # 4.0
-  cvttsd2si %xmm4,%eax
+__p4_fibo_2:
+  call   __number_lt_3
+  ucomisd 0x94(%rip),%xmm0
+  jne    ...                  # the branch
+  call   __number_minus_4
+  call   __p4_fibo_2          # itself
 ```
 
-This is the arithmetic slice and nothing more: expressions the resolver pinned
-down completely, made of number literals and the atoms that are one
-instruction. No object graph, no laziness, no allocation, because a constant
-expression needs none of them. Everything else is refused with a message rather
-than guessed at.
+Every applied formation becomes a function taking its voids as parameters, so
+an object applying itself is a call. `if` is not an atom: `true` and `false` are
+both a `bool` holding a two-argument formation and differing only in which
+argument it hands back, so dispatching on one is a choice between two
+expressions, and compiling it as a branch is what leaves the arm not taken
+unevaluated.
+
+`lt`, `minus` and `neg` are in the disassembly as ordinary functions, and none
+of them are named in the compiler. They are written in EO on top of `gt`, `plus`
+and `times`, so those four instructions were enough for all three to fall out.
+
+Values are unboxed doubles throughout, a truth being 1.0 or 0.0. So the slice
+this covers is the numeric one, and everything outside it is refused with a
+message rather than guessed at. Two places where the value model shows through
+are named in the code rather than inferred: `dataized` and `as-bytes` are
+no-ops, a number and its bytes being the same thing unboxed, and `if` is
+recognised by name, which is right for the runtime's `bool` but would misfire on
+a user object that also has one.
 
 The oracle is `eoc dataize`, which runs the same source through the Java
 runtime. Comparing against it is the only check a binary can have, the format
