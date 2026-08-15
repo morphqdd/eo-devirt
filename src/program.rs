@@ -6,11 +6,16 @@
 //! dot dispatches on a receiver computed at run time.
 
 use crate::xmir::{Element, Xmir};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// How far the resolver follows decorators before it gives up, so that a cycle
 /// of objects decorating each other cannot spin forever.
 const DEPTH: usize = 32;
+
+/// How many times the shapes of voids are recomputed before the answer is
+/// taken as settled. What one call site puts into a void can depend on what
+/// another put into a void of its own, so one pass is not enough.
+const ROUNDS: usize = 8;
 
 /// A whole program: every XMIR document that makes it up.
 pub struct Program {
@@ -78,7 +83,7 @@ impl Program {
                 nest(object, None, &mut nests);
             }
         }
-        Resolver {
+        let mut resolver = Resolver {
             globals: self
                 .documents
                 .iter()
@@ -86,7 +91,23 @@ impl Program {
                 .filter_map(|object| path(object).map(|path| (path, object)))
                 .collect(),
             nests,
+            shapes: HashMap::new(),
+            open: HashSet::new(),
+        };
+        for _ in 0..ROUNDS {
+            let mut shapes = HashMap::new();
+            let mut open = HashSet::new();
+            for document in &self.documents {
+                resolver.learn(document.root(), Where::Nowhere, &mut shapes, &mut open);
+            }
+            let settled = signature(&shapes, &open) == signature(&resolver.shapes, &resolver.open);
+            resolver.shapes = shapes;
+            resolver.open = open;
+            if settled {
+                break;
+            }
         }
+        resolver
     }
 }
 
@@ -141,11 +162,24 @@ enum Where<'a> {
 /// A top-level object carries its full path in `loc`, so an object declared in
 /// a package is known as `string.regex`, not just `regex`.
 ///
+/// What every call site put into a void.
+enum Shape<'a> {
+    /// Every call site agreed on this one.
+    One(&'a Element),
+    /// They did not agree.
+    Many,
+}
+
 /// `nests` maps every object to the formation that declares it, which is what
-/// its `ρ` will be bound to.
+/// its `ρ` will be bound to. `shapes` says what goes into each void, and `open`
+/// holds the names dispatched by applications we could not resolve: such an
+/// application can fill the voids of any body bound under that name, so those
+/// voids stay open however well the visible call sites agree.
 struct Resolver<'a> {
     globals: Vec<(String, &'a Element)>,
     nests: HashMap<usize, &'a Element>,
+    shapes: HashMap<usize, Shape<'a>>,
+    open: HashSet<String>,
 }
 
 impl<'a> Resolver<'a> {
@@ -155,7 +189,7 @@ impl<'a> Resolver<'a> {
     fn count(&self, element: &'a Element, scope: Where<'a>, report: &mut Report) {
         let inner = match attribute(element, "base") {
             Some(base) => {
-                self.walk(base, scope, report);
+                self.walk(element, base, scope, report);
                 scope
             }
             None => Where::At(element),
@@ -171,7 +205,7 @@ impl<'a> Resolver<'a> {
     /// A chain that starts with a bare dot dispatches on a receiver computed at
     /// run time, which no amount of name resolution can pin down, so every one
     /// of its steps counts as dynamic.
-    fn walk(&self, base: &str, scope: Where<'a>, report: &mut Report) {
+    fn walk(&self, element: &'a Element, base: &str, scope: Where<'a>, report: &mut Report) {
         let mut steps = base.split('.');
         let mut here = match steps.next() {
             Some("Φ") => {
@@ -180,15 +214,119 @@ impl<'a> Resolver<'a> {
             }
             Some("ξ") => scope,
             Some("∅") => Where::Runtime,
-            _ => {
-                report.dynamic += steps.filter(|step| !step.is_empty()).count();
-                return;
-            }
+            _ => self.handed(element, scope, 0),
         };
-        for name in steps {
+        for name in steps.filter(|step| !step.is_empty()) {
             let (score, landing) = self.step(here, name, 0);
             tally(score, name, report);
             here = landing;
+        }
+    }
+
+    /// The receiver an application hands to a leading-dot dispatch: the one
+    /// child that carries no `as`, every argument having one.
+    fn handed(&self, element: &'a Element, scope: Where<'a>, depth: usize) -> Where<'a> {
+        if depth > DEPTH {
+            return Where::Runtime;
+        }
+        match element
+            .children
+            .iter()
+            .find(|child| attribute(child, "as").is_none())
+        {
+            Some(receiver) => self.value(receiver, scope, depth + 1),
+            None => Where::Runtime,
+        }
+    }
+
+    /// Walk the program, noting what each call site puts into a void.
+    fn learn(
+        &self,
+        element: &'a Element,
+        scope: Where<'a>,
+        shapes: &mut HashMap<usize, Shape<'a>>,
+        open: &mut HashSet<String>,
+    ) {
+        let inner = match attribute(element, "base") {
+            Some(base) => {
+                self.hand(element, base, scope, shapes, open);
+                scope
+            }
+            None => Where::At(element),
+        };
+        for child in &element.children {
+            self.learn(child, inner, shapes, open);
+        }
+    }
+
+    /// Hand the arguments of one application to the voids they fill.
+    fn hand(
+        &self,
+        element: &'a Element,
+        base: &str,
+        scope: Where<'a>,
+        shapes: &mut HashMap<usize, Shape<'a>>,
+        open: &mut HashSet<String>,
+    ) {
+        let args: Vec<&'a Element> = element
+            .children
+            .iter()
+            .filter(|child| attribute(child, "as").is_some())
+            .collect();
+        if args.is_empty() {
+            return;
+        }
+        let Where::At(formation) = self.target(base, scope, 0) else {
+            if let Some(last) = base.rsplit('.').find(|step| !step.is_empty()) {
+                open.insert(last.to_string());
+            }
+            return;
+        };
+        let voids: Vec<&'a Element> = formation
+            .children
+            .iter()
+            .filter(|child| attribute(child, "base") == Some("∅"))
+            .collect();
+        for arg in args {
+            let slot = attribute(arg, "as").and_then(|slot| match slot.strip_prefix('α') {
+                Some(index) => index
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| voids.get(i).copied()),
+                None => voids.iter().copied().find(|void| named(void, slot)),
+            });
+            let Some(slot) = slot else { continue };
+            let seen = match self.value(arg, scope, 0) {
+                Where::At(shape) => Shape::One(shape),
+                _ => Shape::Many,
+            };
+            let key = slot as *const Element as usize;
+            match (shapes.get(&key), &seen) {
+                (None, _) => {
+                    shapes.insert(key, seen);
+                }
+                (Some(Shape::One(known)), Shape::One(shape)) if std::ptr::eq(*known, *shape) => {}
+                _ => {
+                    shapes.insert(key, Shape::Many);
+                }
+            }
+        }
+    }
+
+    /// What a void holds, when every call site agreed and nothing could have
+    /// filled it from a place we could not see.
+    fn filled(&self, void: &'a Element) -> Where<'a> {
+        let hidden = self
+            .nests
+            .get(&(void as *const Element as usize))
+            .and_then(|formation| attribute(formation, "name"))
+            .is_some_and(|name| self.open.contains(name));
+        if hidden {
+            return Where::Runtime;
+        }
+        match self.shapes.get(&(void as *const Element as usize)) {
+            Some(Shape::One(shape)) => Where::At(shape),
+            _ => Where::Runtime,
         }
     }
 
@@ -315,7 +453,7 @@ impl<'a> Resolver<'a> {
         match here {
             Where::At(formation) => match self.attribute(formation, name, depth) {
                 Some(binding) => (Score::Resolved, self.value(binding, here, depth)),
-                None if child(formation, "λ").is_some() => (Score::Dynamic, Where::Runtime),
+                None if self.opaque(formation, depth) => (Score::Dynamic, Where::Runtime),
                 None => (Score::Unresolved, Where::Nowhere),
             },
             Where::Runtime => (Score::Dynamic, Where::Runtime),
@@ -323,8 +461,36 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Whether a formation might still offer names we cannot see: it hides
+    /// native code behind a `λ`, or it decorates something we could not follow.
+    /// Not finding a name on such a formation is not knowing, not absence.
+    fn opaque(&self, formation: &'a Element, depth: usize) -> bool {
+        if child(formation, "λ").is_some() {
+            return true;
+        }
+        match child(formation, "φ") {
+            Some(decorator) => !matches!(
+                self.value(decorator, Where::At(formation), depth + 1),
+                Where::At(_)
+            ),
+            None => false,
+        }
+    }
+
     /// Where a chain lands, without scoring anything on the way.
     fn target(&self, base: &str, scope: Where<'a>, depth: usize) -> Where<'a> {
+        self.lands(None, base, scope, depth)
+    }
+
+    /// Where a chain lands, knowing which element carries it so that a
+    /// leading-dot dispatch can see its receiver.
+    fn lands(
+        &self,
+        element: Option<&'a Element>,
+        base: &str,
+        scope: Where<'a>,
+        depth: usize,
+    ) -> Where<'a> {
         let mut steps = base.split('.');
         let mut here = match steps.next() {
             Some("Φ") => {
@@ -340,16 +506,23 @@ impl<'a> Resolver<'a> {
                 return here;
             }
             Some("ξ") => scope,
-            _ => return Where::Runtime,
+            Some("∅") => Where::Runtime,
+            _ => match element {
+                Some(element) => self.handed(element, scope, depth),
+                None => return Where::Runtime,
+            },
         };
-        for name in steps {
+        for name in steps.filter(|step| !step.is_empty()) {
             here = self.step(here, name, depth + 1).1;
         }
         here
     }
 
-    /// The binding a formation offers under this name, following the decorator
-    /// when the formation does not hold the name itself.
+    /// The binding a formation offers under this name.
+    ///
+    /// When the formation does not hold the name, the decorator is followed,
+    /// and failing that the result of the formation's own native code, whose
+    /// shape the `atom` attribute on its `λ` declares.
     fn attribute(&self, formation: &'a Element, name: &str, depth: usize) -> Option<&'a Element> {
         if depth > DEPTH {
             return None;
@@ -357,9 +530,15 @@ impl<'a> Resolver<'a> {
         if let Some(found) = child(formation, name) {
             return Some(found);
         }
-        let decorator = child(formation, "φ")?;
-        match self.value(decorator, Where::At(formation), depth + 1) {
-            Where::At(decorated) => self.attribute(decorated, name, depth + 1),
+        if let Some(decorator) = child(formation, "φ")
+            && let Where::At(decorated) = self.value(decorator, Where::At(formation), depth + 1)
+            && let Some(found) = self.attribute(decorated, name, depth + 1)
+        {
+            return Some(found);
+        }
+        let kind = attribute(child(formation, "λ")?, "atom")?;
+        match self.lands(None, kind, Where::Nowhere, depth + 1) {
+            Where::At(result) => self.attribute(result, name, depth + 1),
             _ => None,
         }
     }
@@ -371,8 +550,8 @@ impl<'a> Resolver<'a> {
             return Where::Runtime;
         }
         match attribute(binding, "base") {
-            Some("∅") => Where::Runtime,
-            Some(base) => self.target(base, scope, depth + 1),
+            Some("∅") => self.filled(binding),
+            Some(base) => self.lands(Some(binding), base, scope, depth + 1),
             None => Where::At(binding),
         }
     }
@@ -401,6 +580,18 @@ fn tally(score: Score, name: &str, report: &mut Report) {
             report.missing.push(name.to_string());
         }
     }
+}
+
+/// A cheap stand-in for the whole table, to tell when it stopped changing.
+fn signature(shapes: &HashMap<usize, Shape<'_>>, open: &HashSet<String>) -> (usize, usize, usize) {
+    (
+        shapes.len(),
+        shapes
+            .values()
+            .filter(|shape| matches!(shape, Shape::Many))
+            .count(),
+        open.len(),
+    )
 }
 
 /// Note, for every object, the formation it is declared in. An application is

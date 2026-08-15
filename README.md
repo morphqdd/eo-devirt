@@ -23,9 +23,9 @@ Measured over the 171 XMIR files of `eo-runtime`, 11997 dispatch steps in all:
 
 | | steps | |
 |---|---|---|
-| resolved | 8789 (73.3%) | pinned to an object the program declares |
-| dynamic | 3017 (25.1%) | goes through a value that exists only at run time |
-| unresolved | 191 (1.6%) | named something not found |
+| resolved | 9057 (75.5%) | pinned to an object the program declares |
+| dynamic | 2860 (23.8%) | goes through a value that exists only at run time |
+| unresolved | 80 (0.7%) | named something the program does not declare |
 
 Reproduce with `cargo run --example resolve <dir-with-xmir>`.
 
@@ -42,8 +42,15 @@ What counts as what:
   to 73.3%.
 - A step through a void is dynamic, though finding the void itself is not: the
   binding is exactly where the program says it is, only its value is not.
-- A step past an atom is dynamic. The `atom` attribute on a `λ` binding does
-  declare the shape of the result, which stage 4 should be able to use.
+- A step past an atom follows the shape its native code produces, which the
+  `atom` attribute on its `λ` declares.
+- A leading-dot dispatch takes its receiver from the child carrying no `as`,
+  and that receiver has a shape like any other expression.
+- A void takes the shape every call site puts into it, when they all agree.
+- Not finding a name on a formation that hides native code, or that decorates
+  something we could not follow, is dynamic rather than unresolved: it is not
+  knowing, not absence. Getting this distinction wrong is what a wrong shape
+  looks like, so the unresolved count doubles as an alarm.
 
 ## Inlining does not pay, and `ρ` is why
 
@@ -62,6 +69,22 @@ nodes and +0.7% of text, because a moved body brings its own dispatches with it.
 So inlining is not the lever. Everything routes back to `ρ`, which is also the
 largest dynamic group. Proving what `ρ` is at a given site is the next thing
 worth building, and it is shape analysis.
+
+## What paid and what did not
+
+Stage 4 took resolution from 60.9% to 75.5% and the dynamic share from 38.1%
+to 23.8%. The gains were lopsided:
+
+| change | resolved |
+|---|---|
+| the shape of `ρ`, read off the `dot` and `stay` rules | 60.9% -> 73.3% |
+| carrying argument shapes into voids, by fixpoint | 73.3% -> 73.4% |
+| taking the receiver of a leading-dot dispatch | 73.4% -> 74.7% |
+| following the declared result of an atom | 74.7% -> 75.5% |
+
+The fixpoint over arguments is the most machinery in this stage and bought the
+least of it. On this corpus most calls are library calls whose arguments differ
+between sites; it may pay better on application code, which is why it stays.
 
 ## Known approximation
 
