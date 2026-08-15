@@ -137,6 +137,11 @@ pub unsafe extern "C" fn eo_as_number(object: *const u64) -> f64 {
 /// in the slot so it runs once. That is what makes an attribute nobody asks
 /// for cost nothing.
 ///
+/// An object that does not hold the name may still decorate one that does, so
+/// the search carries on through `φ`. Its own attributes come first: what an
+/// object holds itself is what it means, and only what it does not hold is
+/// asked of what it decorates.
+///
 /// # Safety
 ///
 /// Called from generated code with an object it made.
@@ -147,10 +152,7 @@ pub unsafe extern "C" fn eo_dispatch(object: *const u64, name: u64) -> *const u6
         refuse("dispatching on a number");
     }
     let count = unsafe { *shape } as usize;
-    for slot in 0..count {
-        if unsafe { *shape.add(1 + slot) } != name {
-            continue;
-        }
+    if let Some(slot) = named(shape, count, name) {
         let held = unsafe { *object.add(HEADER + slot) };
         if held != 0 {
             return held as *const u64;
@@ -165,7 +167,19 @@ pub unsafe extern "C" fn eo_dispatch(object: *const u64, name: u64) -> *const u6
         unsafe { *object.cast_mut().add(HEADER + slot) = made as u64 };
         return made;
     }
-    refuse("an attribute the object does not have")
+    let Some(_decorator) = named(shape, count, DECORATOR) else {
+        refuse("an attribute the object does not have")
+    };
+    let inner = unsafe { eo_dispatch(object, DECORATOR) };
+    unsafe { eo_dispatch(inner, name) }
+}
+
+/// The number the compiler interns `φ` to, which it holds back for it.
+const DECORATOR: u64 = 0;
+
+/// Where a name sits in a shape, if it does.
+fn named(shape: *const u64, count: usize, name: u64) -> Option<usize> {
+    (0..count).find(|slot| unsafe { *shape.add(1 + slot) } == name)
 }
 
 /// Stop, saying what was asked for and could not be done.
