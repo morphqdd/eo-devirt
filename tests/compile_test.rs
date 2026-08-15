@@ -148,10 +148,40 @@ fn builds_a_local_once_however_often_it_is_mentioned() {
     assert_eq!(run("p14"), ("x".to_string(), "2.0".to_string()));
 }
 
+/// A branch is only for a truth. `p15` asks a number to choose, which it
+/// cannot do, so this refuses rather than quietly branching on whether the
+/// number is zero. The Java runtime refuses it too.
+#[test]
+fn refuses_to_ask_something_that_is_not_a_truth_to_choose() {
+    assert!(compile("p15").is_err());
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it, and hand back what the program wrote
 /// and what it dataized to, which the runtime reports separately.
 fn run(name: &str) -> (String, String) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let object = compile(name).unwrap();
+    let out = std::env::temp_dir().join(format!("eo2bin-{name}"));
+    let unit = out.with_extension("o");
+    fs::write(&unit, object).unwrap();
+    let linked = Command::new("cc")
+        .arg("-o")
+        .arg(&out)
+        .arg(&unit)
+        .arg(library(&root))
+        .status()
+        .unwrap();
+    assert!(linked.success(), "linking failed");
+    let done = Command::new(&out).output().unwrap();
+    assert!(done.status.success(), "{} exited badly", out.display());
+    let written = String::from_utf8(done.stdout).unwrap();
+    let reported = String::from_utf8(done.stderr).unwrap();
+    (written.trim().to_string(), reported.trim().to_string())
+}
+
+/// Compile one fixture, whatever comes of it.
+fn compile(name: &str) -> Result<Vec<u8>, String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixtures = root.join("tests/fixtures");
     let documents: Vec<Xmir> = [
@@ -175,25 +205,7 @@ fn run(name: &str) -> (String, String) {
         Xmir::parse(&text).unwrap()
     })
     .collect();
-    let object = Program::from(documents)
-        .compile(&format!("Φ.{name}"))
-        .unwrap();
-    let out = std::env::temp_dir().join(format!("eo2bin-{name}"));
-    let unit = out.with_extension("o");
-    fs::write(&unit, object).unwrap();
-    let linked = Command::new("cc")
-        .arg("-o")
-        .arg(&out)
-        .arg(&unit)
-        .arg(library(&root))
-        .status()
-        .unwrap();
-    assert!(linked.success(), "linking failed");
-    let done = Command::new(&out).output().unwrap();
-    assert!(done.status.success(), "{} exited badly", out.display());
-    let written = String::from_utf8(done.stdout).unwrap();
-    let reported = String::from_utf8(done.stderr).unwrap();
-    (written.trim().to_string(), reported.trim().to_string())
+    Program::from(documents).compile(&format!("Φ.{name}"))
 }
 
 /// Build the runtime and say where its library landed.
