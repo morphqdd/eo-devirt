@@ -2,7 +2,7 @@
 //!
 //! Usage: `cargo run --example inline <dir-with-xmir>`
 
-use eo_devirt::{Program, Xmir};
+use eo2bin::{Program, Xmir};
 use std::fs;
 use std::path::{Path, PathBuf};
 

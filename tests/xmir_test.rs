@@ -1,4 +1,4 @@
-use eo_devirt::Xmir;
+use eo2bin::Xmir;
 
 #[test]
 fn keeps_the_text_on_both_sides_of_an_entity_reference() {

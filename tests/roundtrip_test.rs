@@ -1,4 +1,4 @@
-use eo_devirt::Xmir;
+use eo2bin::Xmir;
 use std::fs;
 use std::path::PathBuf;
 

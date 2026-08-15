@@ -267,7 +267,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "eo-devirt"
+name = "eo-runtime"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "eo2bin"
 version = "0.1.0"
 dependencies = [
  "cranelift-codegen",
@@ -277,13 +284,6 @@ dependencies = [
  "divan",
  "quick-xml",
  "target-lexicon",
-]
-
-[[package]]
-name = "eo-runtime"
-version = "0.1.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use eo_devirt::{Program, Xmir};
+use eo2bin::{Program, Xmir};
 
 /// `ρ` is bound by the `dot` rule to the formation that held the attribute, and
 /// the `stay` rule refuses to rebind it, so its shape is the formation the body

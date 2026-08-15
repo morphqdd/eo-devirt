@@ -9,7 +9,7 @@
 //! The argument is patched straight into the XMIR, so no parser has to run per
 //! size.
 
-use eo_devirt::{Program, Xmir};
+use eo2bin::{Program, Xmir};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -1,4 +1,4 @@
-use eo_devirt::{Program, Xmir};
+use eo2bin::{Program, Xmir};
 
 /// A dispatch that lands on a body which never mentions `ρ` can be replaced by
 /// that body: there is nothing in it whose meaning depends on where it was
