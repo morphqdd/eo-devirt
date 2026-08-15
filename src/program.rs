@@ -31,16 +31,31 @@ impl From<Vec<Xmir>> for Program {
 }
 
 impl Program {
+    /// Replace every dispatch whose body is safe to move with that body.
+    ///
+    /// Moving a body is only sound when nothing in it reads `ρ`: the `dot` rule
+    /// binds `ρ` to whatever the dispatch was made on, so a body that reads it
+    /// means something else once it sits somewhere else.
+    pub fn inline(&self) -> Vec<Xmir> {
+        let resolver = self.resolver();
+        self.documents
+            .iter()
+            .map(|document| document.rebuilt(resolver.inlined(document.root(), Where::Nowhere)))
+            .collect()
+    }
+
+    /// How many dispatches could be replaced by the body they land on.
+    pub fn movable(&self) -> usize {
+        let resolver = self.resolver();
+        self.documents
+            .iter()
+            .map(|document| resolver.movables(document.root(), Where::Nowhere))
+            .sum()
+    }
+
     /// Resolve every reference the program makes and report on the outcome.
     pub fn resolve(&self) -> Report {
-        let resolver = Resolver {
-            globals: self
-                .documents
-                .iter()
-                .flat_map(|document| document.root().children.iter())
-                .filter_map(|object| path(object).map(|path| (path, object)))
-                .collect(),
-        };
+        let resolver = self.resolver();
         let mut report = Report {
             resolved: 0,
             unresolved: 0,
@@ -51,6 +66,18 @@ impl Program {
             resolver.count(document.root(), Where::Nowhere, &mut report);
         }
         report
+    }
+
+    /// Everything the program declares at the top level.
+    fn resolver(&self) -> Resolver<'_> {
+        Resolver {
+            globals: self
+                .documents
+                .iter()
+                .flat_map(|document| document.root().children.iter())
+                .filter_map(|object| path(object).map(|path| (path, object)))
+                .collect(),
+        }
     }
 }
 
@@ -150,6 +177,67 @@ impl<'a> Resolver<'a> {
             tally(score, name, report);
             here = landing;
         }
+    }
+
+    /// Rewrite a subtree, replacing every dispatch that can safely be replaced
+    /// by the body it lands on.
+    fn inlined(&self, element: &'a Element, scope: Where<'a>) -> Element {
+        let inner = match attribute(element, "base") {
+            Some(_) => scope,
+            None => Where::At(element),
+        };
+        if let Some(body) = self.movable(element, scope) {
+            return Element {
+                tag: element.tag.clone(),
+                attributes: element
+                    .attributes
+                    .iter()
+                    .filter(|(key, _)| key != "base")
+                    .cloned()
+                    .collect(),
+                text: element.text.clone(),
+                children: body.children.clone(),
+            };
+        }
+        Element {
+            tag: element.tag.clone(),
+            attributes: element.attributes.clone(),
+            text: element.text.clone(),
+            children: element
+                .children
+                .iter()
+                .map(|child| self.inlined(child, inner))
+                .collect(),
+        }
+    }
+
+    /// Count the dispatches in a subtree that could be moved.
+    fn movables(&self, element: &'a Element, scope: Where<'a>) -> usize {
+        let inner = match attribute(element, "base") {
+            Some(_) => scope,
+            None => Where::At(element),
+        };
+        usize::from(self.movable(element, scope).is_some())
+            + element
+                .children
+                .iter()
+                .map(|child| self.movables(child, inner))
+                .sum::<usize>()
+    }
+
+    /// The body a dispatch lands on, when moving it would keep the meaning.
+    fn movable(&self, element: &'a Element, scope: Where<'a>) -> Option<&'a Element> {
+        if !element.children.is_empty() {
+            return None;
+        }
+        let base = attribute(element, "base")?;
+        let Where::At(body) = self.target(base, scope, 0) else {
+            return None;
+        };
+        if attribute(body, "base").is_some() || !settled(body) {
+            return None;
+        }
+        Some(body)
     }
 
     /// Start a chain at `Φ`, taking as many steps as the longest global path
@@ -294,6 +382,20 @@ fn tally(score: Score, name: &str, report: &mut Report) {
             report.missing.push(name.to_string());
         }
     }
+}
+
+/// Whether a body carries its meaning with it: no `ρ` to be rebound, no void
+/// left dangling, and no native code hiding behind a `λ`.
+fn settled(body: &Element) -> bool {
+    if child(body, "λ").is_some() {
+        return false;
+    }
+    let mine = match attribute(body, "base") {
+        Some("∅") => false,
+        Some(base) => !base.split('.').any(|step| step == "ρ"),
+        None => true,
+    };
+    mine && body.children.iter().all(settled)
 }
 
 /// The full path a top-level object is known by: whatever `loc` says, minus the

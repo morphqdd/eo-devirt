@@ -4,7 +4,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 
 /// A parsed XMIR document.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Xmir {
     prologue: Vec<Prologue>,
     root: Element,
@@ -12,14 +12,14 @@ pub struct Xmir {
 
 /// What stands before the root element: the XML declaration and the comment
 /// the EO parser puts at the top of every file.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum Prologue {
     Declaration(String),
     Comment(String),
 }
 
 /// One element of an XMIR document, with its attributes in source order.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct Element {
     pub(crate) tag: String,
     pub(crate) attributes: Vec<(String, String)>,
@@ -80,6 +80,14 @@ impl Xmir {
     /// The root element of the document.
     pub(crate) fn root(&self) -> &Element {
         &self.root
+    }
+
+    /// The same document with another tree under the same prologue.
+    pub(crate) fn rebuilt(&self, root: Element) -> Self {
+        Self {
+            prologue: self.prologue.clone(),
+            root,
+        }
     }
 
     /// Render the document back to XMIR text.

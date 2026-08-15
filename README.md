@@ -9,12 +9,12 @@ transformation has an oracle.
 
 ## Status
 
-Stage 2 of 5: name resolution.
+Stage 3 of 5: inlining. It does not work, see below.
 
 - [x] read and write XMIR without losing anything
 - [x] resolve `Φ.a.b` and `ξ.a` references, following decorators and packages
-- [ ] inline the dispatches that turn out to be monomorphic
-- [ ] shape analysis for the rest
+- [x] inline the dispatches whose body is safe to move -- 3 of 9776
+- [ ] shape analysis, which everything now waits on
 - [ ] a native backend
 
 ## Where the dispatch goes
@@ -42,6 +42,26 @@ What counts as what:
   binding is exactly where the program says it is, only its value is not.
 - A step past an atom is dynamic. The `atom` attribute on a `λ` binding does
   declare the shape of the result, which stage 4 should be able to use.
+
+## Inlining does not pay, and `ρ` is why
+
+XMIR has no node meaning "call this body directly", so the only way to spend a
+resolved dispatch is to move the body to the call site. That is sound only when
+nothing in the body reads `ρ`, since `ρ` is bound to whatever the dispatch was
+made on and means something else once the body sits elsewhere.
+
+Over `eo-runtime`, **3 of 9776 dispatch sites qualify**. The bodies that resolve
+almost always read `ρ`, hold a void, or hide native code behind a `λ`. Allowing
+arguments at the call site does not help: the count stays at 3.
+
+The three that do qualify make the program bigger, not smaller: +113 dispatch
+nodes and +0.7% of text, because a moved body brings its own dispatches with it.
+
+So inlining is not the lever. Everything routes back to `ρ`, which is also the
+largest dynamic group. Proving what `ρ` is at a given site is the next thing
+worth building, and it is shape analysis.
+
+## Leftovers
 
 The 1.1% that is neither is not yet explained. The obvious guess, that these are
 dispatches past atoms, is wrong: the rule for that case fires zero times on this
