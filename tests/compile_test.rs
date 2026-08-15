@@ -184,11 +184,8 @@ fn run(name: &str) -> (String, String) {
 /// chooses between them on a condition, and asks for an attribute the
 /// decorated one holds.
 ///
-/// This passes without any decorator being followed at run time: a formation
-/// with a `φ` is not held as an object, so `derived` is called and its `φ`
-/// evaluated, which hands back `base` itself. The answer is right and the
-/// object is not -- asking for `extra`, which only `derived` has, would find
-/// nothing. That gap is #3, and this test does not reach it.
+/// `derived` is held as an object, so asking it for `value` finds nothing of
+/// its own and carries on through its `φ` to `base`, which has it.
 ///
 /// ```text
 /// $ eoc dataize p16
@@ -197,6 +194,18 @@ fn run(name: &str) -> (String, String) {
 #[test]
 fn picks_a_decorated_object_while_running() {
     assert_eq!(run("p16").1, "7.0");
+}
+
+/// A decorating object keeps what it holds itself. `p17` asks one for `extra`,
+/// which only it has and the object it decorates does not.
+///
+/// ```text
+/// $ eoc dataize p17
+/// [0x3FF00000-00000000-] = 1.0
+/// ```
+#[test]
+fn keeps_what_a_decorating_object_holds_itself() {
+    assert_eq!(run("p17").1, "1.0");
 }
 
 /// Compile one fixture, whatever comes of it.

@@ -743,7 +743,14 @@ impl<'a> Unit<'a> {
     }
 
     /// The number a name is known by, the same everywhere in one program.
+    ///
+    /// `φ` gets zero, which the runtime holds back for it: an object that does
+    /// not hold a name carries on through its decorator, and the runtime has
+    /// to know which slot that is without being told a name.
     fn intern(&mut self, name: &str) -> u64 {
+        if name == "φ" {
+            return 0;
+        }
         let next = self.interned.len() as u64 + 1;
         *self.interned.entry(name.to_string()).or_insert(next)
     }
@@ -1131,12 +1138,13 @@ fn raw(element: &Element) -> Option<Vec<u8>> {
 }
 
 /// Whether a formation is one to hold rather than to apply: it declares no
-/// voids to fill and no `φ` to stand for it, so all it is is its attributes.
+/// voids to fill, so there is nothing to hand it and all it is is what it
+/// holds. A `φ` is one of those attributes like any other, and the object it
+/// decorates is asked only for names this one does not have.
 fn plain(element: &Element) -> bool {
     attribute(element, "base").is_none()
         && !element.children.is_empty()
         && voids(element).is_empty()
-        && child(element, "φ").is_none()
 }
 
 /// The voids a formation declares, in the order arguments fill them.
