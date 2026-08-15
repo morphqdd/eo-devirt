@@ -54,6 +54,18 @@ fn writes_out_a_result_that_is_not_a_whole_number() {
     assert_eq!(run("p5"), "0.5");
 }
 
+/// A system call. `p6` closes a descriptor that was never open, which every
+/// POSIX answers with -1, so the value is the same on any machine.
+///
+/// ```text
+/// $ eoc dataize p6
+/// [0xBFF00000-00000000-] = -1.0
+/// ```
+#[test]
+fn makes_a_system_call() {
+    assert_eq!(run("p6"), "-1.0");
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it and hand back what it wrote.
 fn run(name: &str) -> String {
@@ -68,6 +80,9 @@ fn run(name: &str) -> String {
         "number/minus",
         "number/neg",
         "dataized",
+        "string",
+        "tuple",
+        "posix",
     ]
     .iter()
     .map(|each| {
