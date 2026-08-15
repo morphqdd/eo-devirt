@@ -9,6 +9,7 @@ use crate::program::{Program, Resolver, Where, attribute, child};
 use crate::xmir::Element;
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::{AbiParam, BlockArg, InstBuilder, Value, types};
+use cranelift_codegen::settings::Configurable as _;
 use cranelift_codegen::{Context, isa, settings};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -109,9 +110,11 @@ impl Program {
             .find(|object| attribute(object, "loc") == Some(locator))
             .ok_or_else(|| format!("no object at {locator}"))?;
         let body = child(object, "φ").ok_or_else(|| format!("{locator} has no φ"))?;
+        let mut flags = settings::builder();
+        flags.set("is_pic", "true").map_err(|e| e.to_string())?;
         let isa = isa::lookup(target_lexicon::Triple::host())
             .map_err(|e| e.to_string())?
-            .finish(settings::Flags::new(settings::builder()))
+            .finish(settings::Flags::new(flags))
             .map_err(|e| e.to_string())?;
         let frontend = isa.frontend_config();
         let mut unit = Unit {

@@ -83,6 +83,37 @@ match on. The Java runtime instead dataizes the name while the program runs and
 looks it up then. Folding it is the same idea the rest of the compiler is built
 on, arriving at the edge of the operating system.
 
+## What it costs
+
+Naive fibonacci, the same program both ways, on a quiet machine. The Java
+column is `org.eolang.Main` out of the jar `eoc` builds, so neither side is
+paying for a build.
+
+| | Java | this |
+|---|---|---|
+| fibo 18 | 7.44 s, and needs `-Xmx4g` | 1.29 ms |
+| fibo 25 | | 7.1 ms |
+| fibo 30 | | 63.9 ms |
+| fibo 32 | | 163 ms |
+
+Both answer 2584 for fibo 18. With the default 256M heap the Java runtime does
+not finish it at all -- `OutOfMemoryError` -- and 4G is what it took to get a
+number out.
+
+The gap is not Cranelift beating a JIT. It is that after the resolver there is
+no object left: `n` is a register, `plus` is an `addsd`, and `fibo` is a `call`.
+The Java runtime keeps every intermediate on the heap with its own attribute
+table and memoisation, which is where four gigabytes for five thousand calls
+comes from.
+
+The measurement is only fair about what this compiles. A program that needs
+real objects at run time is refused outright here, so the honest reading is
+"this much, on the numeric slice", not "this much, on EO".
+
+Reproduce with `cargo bench`. Each run of the binary is a process being started
+and waited on, so about a millisecond of every sample is that, which at fibo 18
+is most of it.
+
 ## Where the dispatch goes
 
 Measured over the 171 XMIR files of `eo-runtime`, 11997 dispatch steps in all:
