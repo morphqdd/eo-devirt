@@ -35,10 +35,16 @@ is a pointer.
 
 An object only appears where the resolver could not say what an expression
 would be. It carries a shape, laid down once in the object file, saying what
-its attributes are called, and a slot for each. Asking one for an attribute is
-`eo_dispatch`, a search of that shape while the program runs -- the lookup this
-whole compiler exists to avoid, kept for the quarter of dispatch that cannot be
-worked out ahead of time.
+its attributes are called and where the body of each is, and a slot for each.
+Asking one for an attribute is `eo_dispatch`, a search of that shape while the
+program runs -- the lookup this whole compiler exists to avoid, kept for the
+quarter of dispatch that cannot be worked out ahead of time.
+
+An attribute is a body, not a value. Making an object costs one allocation and
+nothing else: the slots start empty, and an attribute runs the first time
+something asks for it, with the object as what it was dispatched from. The
+answer is kept in the slot, so it runs once. An attribute nobody asks for costs
+nothing, which is what EO means by lazy.
 
 Which form an expression takes has to be settled before any code is built,
 since a function may call the function it is the body of. So the same question
