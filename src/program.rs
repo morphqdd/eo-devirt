@@ -321,6 +321,14 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// What every call site put into a void, when they agreed.
+    pub(crate) fn shape_of(&self, void: &'a Element) -> Option<&'a Element> {
+        match self.shapes.get(&(std::ptr::from_ref(void) as usize)) {
+            Some(Shape::One(shape)) => Some(shape),
+            _ => None,
+        }
+    }
+
     /// What a void holds, when every call site agreed and nothing could have
     /// filled it from a place we could not see.
     fn filled(&self, void: &'a Element) -> Where<'a> {
