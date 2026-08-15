@@ -30,6 +30,9 @@ enum Val {
     Number(Value),
     /// Bytes, as where they start and how many of them there are.
     Bytes { at: Value, size: Value },
+    /// An object, as where it is. Only what the resolver could not pin down
+    /// takes this form, since an object costs a lookup where a number does not.
+    Object(Value),
 }
 
 impl Val {
@@ -38,8 +41,20 @@ impl Val {
         match self {
             Self::Number(value) => Ok(value),
             Self::Bytes { .. } => Err("bytes where a number was wanted".to_string()),
+            Self::Object(_) => Err("an object where a number was wanted".to_string()),
         }
     }
+}
+
+/// What an expression will turn out to be, worked out before any code is
+/// built, because a function's shape has to be settled before its body can
+/// call itself.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// A number, which travels unboxed.
+    Number,
+    /// An object, which travels as a pointer.
+    Object,
 }
 
 /// Where in the program one expression is being built.
@@ -52,6 +67,14 @@ struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
+    /// The frame for the body of a formation being entered.
+    fn within(self, formation: &'a Element) -> Self {
+        Self {
+            scope: Where::At(formation),
+            depth: self.depth + 1,
+        }
+    }
+
     /// The frame one expression further in.
     fn inner(self) -> Self {
         Self {
@@ -85,6 +108,10 @@ fn instruction(loc: &str) -> Option<Op> {
 fn passes(loc: &str) -> bool {
     matches!(loc, "Φ.dataized")
 }
+
+/// What everything the runtime reads is aligned to, a shape being read as
+/// words rather than bytes.
+const WORD: u64 = 8;
 
 /// How many arguments a system call may be handed, which the runtime agrees
 /// on.
@@ -126,6 +153,8 @@ impl Program {
             signed: HashMap::new(),
             pending: Vec::new(),
             spelt: 0,
+            interned: HashMap::new(),
+            shapes: HashMap::new(),
             frontend,
         };
         unit.entry(body, object)?;
@@ -144,6 +173,8 @@ struct Unit<'a> {
     signed: HashMap<usize, FuncId>,
     pending: Vec<&'a Element>,
     spelt: usize,
+    interned: HashMap<String, u64>,
+    shapes: HashMap<usize, cranelift_module::DataId>,
     frontend: cranelift_codegen::isa::TargetFrontendConfig,
 }
 
@@ -178,8 +209,8 @@ impl<'a> Unit<'a> {
             },
             &mut env,
         )?;
+        let shown = self.unboxed(&mut builder, value)?;
         let callee = self.module.declare_func_in_func(printer, builder.func);
-        let shown = value.number()?;
         builder.ins().call(callee, &[shown]);
         let fine = builder.ins().iconst(types::I32, 0);
         builder.ins().return_(&[fine]);
@@ -196,7 +227,8 @@ impl<'a> Unit<'a> {
             .ok_or("a formation compiled before it was declared")?;
         let voids = voids(formation);
         let mut context = self.module.make_context();
-        context.func.signature = self.signature(voids.len());
+        context.func.signature = self.signature(formation)?;
+        let boxing = self.gives(formation)? == types::I64;
         let mut shell = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut shell);
         let entry = builder.create_block();
@@ -220,7 +252,12 @@ impl<'a> Unit<'a> {
             },
             &mut env,
         )?;
-        builder.ins().return_(&[value.number()?]);
+        let handed = if boxing {
+            self.boxed(&mut builder, value)?
+        } else {
+            value.number()?
+        };
+        builder.ins().return_(&[handed]);
         builder.finalize(self.frontend);
         self.module
             .define_function(id, &mut context)
@@ -267,6 +304,9 @@ impl<'a> Unit<'a> {
                     .number()?;
                 return Ok(Val::Number(self.operate(builder, op, left, right)));
             }
+            if plain(target) {
+                return self.object(builder, target, frame, env);
+            }
             if attribute(target, "loc") == Some("Φ.string") {
                 return self.letters(builder, element);
             }
@@ -310,6 +350,9 @@ impl<'a> Unit<'a> {
         {
             return Ok(Val::Number(builder.ins().fcvt_from_sint(types::F64, size)));
         }
+        if let Val::Object(object) = self.receiver(builder, element, base, frame, env)? {
+            return self.lookup(builder, object, wanted);
+        }
         let Where::At(target) =
             self.resolver
                 .lands(None, &format!("Φ.number.{wanted}"), Where::Nowhere, 0)
@@ -343,6 +386,191 @@ impl<'a> Unit<'a> {
         }
     }
 
+    /// What an expression will turn out to be, worked out without building
+    /// anything.
+    ///
+    /// A function's shape has to be settled before its body is built, since
+    /// the body may call the function it is the body of. So this answers the
+    /// same question `emit` answers, one step ahead of it and on the tree
+    /// alone.
+    fn kind(&self, element: &'a Element, frame: Frame<'a>) -> Result<Kind, String> {
+        if frame.depth > DEPTH {
+            return Ok(Kind::Number);
+        }
+        if element.text.is_some() {
+            return Ok(Kind::Number);
+        }
+        let Some(base) = attribute(element, "base") else {
+            return Ok(Kind::Object);
+        };
+        if base == "∅" || void(base, frame.scope).is_some() {
+            return Ok(Kind::Number);
+        }
+        if let Some(local) = local(base, frame.scope) {
+            return self.kind(local, frame.inner());
+        }
+        if base.rsplit('.').next() == Some("if") {
+            let taken = self.kind(argument(element, 0)?, frame.inner())?;
+            let other = self.kind(argument(element, 1)?, frame.inner())?;
+            return Ok(if taken == Kind::Object || other == Kind::Object {
+                Kind::Object
+            } else {
+                Kind::Number
+            });
+        }
+        let Where::At(target) = self.resolver.lands(Some(element), base, frame.scope, 0) else {
+            return Ok(Kind::Number);
+        };
+        if plain(target) {
+            return Ok(Kind::Object);
+        }
+        if attribute(target, "loc").and_then(instruction).is_some()
+            || attribute(target, "loc") == Some("Φ.posix")
+            || attribute(target, "loc") == Some("Φ.string")
+        {
+            return Ok(Kind::Number);
+        }
+        if attribute(target, "loc").is_some_and(passes) {
+            return self.kind(argument(element, 0)?, frame.inner());
+        }
+        match child(target, "φ") {
+            Some(body) => self.kind(body, frame.within(target)),
+            None => Ok(Kind::Number),
+        }
+    }
+
+    /// What kind of value the function standing for a formation hands back.
+    fn gives(&self, formation: &'a Element) -> Result<types::Type, String> {
+        let body = child(formation, "φ").ok_or("a formation with no φ was applied")?;
+        Ok(
+            match self.kind(
+                body,
+                Frame {
+                    scope: Where::At(formation),
+                    depth: 0,
+                },
+            )? {
+                Kind::Object => types::I64,
+                Kind::Number => types::F64,
+            },
+        )
+    }
+
+    /// Build an object: room of its shape, then every attribute bound into it.
+    ///
+    /// This is the boxed form, and the compiler reaches for it only where the
+    /// resolver could not say what an expression would be, since holding a
+    /// value this way costs an allocation and a lookup that holding it as a
+    /// number does not.
+    fn object(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        formation: &'a Element,
+        frame: Frame<'a>,
+        env: &mut Env,
+    ) -> Result<Val, String> {
+        let shape = self.shape(formation)?;
+        let word = self.module.declare_data_in_func(shape, builder.func);
+        let at = builder.ins().symbol_value(types::I64, word);
+        let made = self.calling("eo_make", &[types::I64], Some(types::I64))?;
+        let callee = self.module.declare_func_in_func(made, builder.func);
+        let call = builder.ins().call(callee, &[at]);
+        let object = builder.inst_results(call)[0];
+        for (slot, binding) in formation.children.iter().enumerate() {
+            let value = self.emit(builder, binding, frame.within(formation), env)?;
+            let boxed = self.boxed(builder, value)?;
+            let index = builder.ins().iconst(types::I64, slot as i64);
+            let fill = self.calling("eo_fill", &[types::I64, types::I64, types::I64], None)?;
+            let callee = self.module.declare_func_in_func(fill, builder.func);
+            builder.ins().call(callee, &[object, index, boxed]);
+        }
+        Ok(Val::Object(object))
+    }
+
+    /// Lay down the shape of a formation: how many attributes, then the number
+    /// each of their names was interned to.
+    fn shape(&mut self, formation: &'a Element) -> Result<cranelift_module::DataId, String> {
+        if let Some(id) = self.shapes.get(&address(formation)) {
+            return Ok(*id);
+        }
+        let mut words = (formation.children.len() as u64).to_ne_bytes().to_vec();
+        for binding in &formation.children {
+            let name = attribute(binding, "name").ok_or("an attribute with no name")?;
+            let number = self.intern(name);
+            words.extend_from_slice(&number.to_ne_bytes());
+        }
+        let id = self.lay(words)?;
+        self.shapes.insert(address(formation), id);
+        Ok(id)
+    }
+
+    /// The number a name is known by, the same everywhere in one program.
+    fn intern(&mut self, name: &str) -> u64 {
+        let next = self.interned.len() as u64 + 1;
+        *self.interned.entry(name.to_string()).or_insert(next)
+    }
+
+    /// Put a value into the form an object slot holds.
+    fn boxed(&mut self, builder: &mut FunctionBuilder, value: Val) -> Result<Value, String> {
+        match value {
+            Val::Object(at) => Ok(at),
+            Val::Number(number) => {
+                let wrap = self.calling("eo_number", &[types::F64], Some(types::I64))?;
+                let callee = self.module.declare_func_in_func(wrap, builder.func);
+                let call = builder.ins().call(callee, &[number]);
+                Ok(builder.inst_results(call)[0])
+            }
+            Val::Bytes { .. } => Err("bytes where an object was wanted".to_string()),
+        }
+    }
+
+    /// Take a number back out of an object.
+    fn unboxed(&mut self, builder: &mut FunctionBuilder, value: Val) -> Result<Value, String> {
+        match value {
+            Val::Object(at) => {
+                let read = self.calling("eo_as_number", &[types::I64], Some(types::F64))?;
+                let callee = self.module.declare_func_in_func(read, builder.func);
+                let call = builder.ins().call(callee, &[at]);
+                Ok(builder.inst_results(call)[0])
+            }
+            other => other.number(),
+        }
+    }
+
+    /// Look a name up on an object while the program runs.
+    fn lookup(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        object: Value,
+        name: &str,
+    ) -> Result<Val, String> {
+        let number = self.intern(name);
+        let named = builder.ins().iconst(types::I64, number as i64);
+        let find = self.calling("eo_dispatch", &[types::I64, types::I64], Some(types::I64))?;
+        let callee = self.module.declare_func_in_func(find, builder.func);
+        let call = builder.ins().call(callee, &[object, named]);
+        Ok(Val::Object(builder.inst_results(call)[0]))
+    }
+
+    /// Declare one of the runtime's own functions.
+    fn calling(
+        &mut self,
+        name: &str,
+        takes: &[types::Type],
+        gives: Option<types::Type>,
+    ) -> Result<FuncId, String> {
+        let mut signature = self.module.make_signature();
+        for each in takes {
+            signature.params.push(AbiParam::new(*each));
+        }
+        if let Some(gives) = gives {
+            signature.returns.push(AbiParam::new(gives));
+        }
+        self.module
+            .declare_function(name, Linkage::Import, &signature)
+            .map_err(|e| e.to_string())
+    }
+
     /// Build a two-way branch.
     ///
     /// `if` is not an atom: `true` and `false` are both a `bool` holding a
@@ -363,28 +591,34 @@ impl<'a> Unit<'a> {
             .number()?;
         let zero = builder.ins().f64const(0.0);
         let flag = builder.ins().fcmp(FloatCC::NotEqual, asked, zero);
+        let boxing = self.kind(argument(element, 0)?, frame.inner())? == Kind::Object
+            || self.kind(argument(element, 1)?, frame.inner())? == Kind::Object;
         let (yes, no, join) = (
             builder.create_block(),
             builder.create_block(),
             builder.create_block(),
         );
-        builder.append_block_param(join, types::F64);
+        builder.append_block_param(join, if boxing { types::I64 } else { types::F64 });
         builder.ins().brif(flag, yes, &[], no, &[]);
-        builder.switch_to_block(yes);
-        builder.seal_block(yes);
-        let taken = self
-            .emit(builder, argument(element, 0)?, frame.inner(), env)?
-            .number()?;
-        builder.ins().jump(join, &[BlockArg::Value(taken)]);
-        builder.switch_to_block(no);
-        builder.seal_block(no);
-        let other = self
-            .emit(builder, argument(element, 1)?, frame.inner(), env)?
-            .number()?;
-        builder.ins().jump(join, &[BlockArg::Value(other)]);
+        for (slot, block) in [yes, no].into_iter().enumerate() {
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let arm = self.emit(builder, argument(element, slot)?, frame.inner(), env)?;
+            let carried = if boxing {
+                self.boxed(builder, arm)?
+            } else {
+                arm.number()?
+            };
+            builder.ins().jump(join, &[BlockArg::Value(carried)]);
+        }
         builder.seal_block(join);
         builder.switch_to_block(join);
-        Ok(Val::Number(builder.block_params(join)[0]))
+        let landed = builder.block_params(join)[0];
+        Ok(if boxing {
+            Val::Object(landed)
+        } else {
+            Val::Number(landed)
+        })
     }
 
     /// Build a system call.
@@ -429,6 +663,9 @@ impl<'a> Unit<'a> {
             passed.push(match handed.get(slot) {
                 Some(Val::Number(value)) => builder.ins().fcvt_to_sint(types::I64, *value),
                 Some(Val::Bytes { at, .. }) => *at,
+                Some(Val::Object(_)) => {
+                    return Err("an object where a system call wanted a number".to_string());
+                }
                 None => nothing,
             });
         }
@@ -473,6 +710,7 @@ impl<'a> Unit<'a> {
             .map_err(|e| e.to_string())?;
         self.spelt += 1;
         let mut description = cranelift_module::DataDescription::new();
+        description.set_align(WORD);
         description.define(letters.into_boxed_slice());
         self.module
             .define_data(id, &description)
@@ -522,7 +760,12 @@ impl<'a> Unit<'a> {
         let id = self.declare(formation)?;
         let callee = self.module.declare_func_in_func(id, builder.func);
         let call = builder.ins().call(callee, &handed);
-        Ok(Val::Number(builder.inst_results(call)[0]))
+        let given = builder.inst_results(call)[0];
+        Ok(if self.gives(formation)? == types::I64 {
+            Val::Object(given)
+        } else {
+            Val::Number(given)
+        })
     }
 
     /// The function standing for a formation, declared and queued for a body
@@ -531,7 +774,7 @@ impl<'a> Unit<'a> {
         if let Some(id) = self.signed.get(&address(formation)) {
             return Ok(*id);
         }
-        let signature = self.signature(voids(formation).len());
+        let signature = self.signature(formation)?;
         let id = self
             .module
             .declare_function(
@@ -573,14 +816,19 @@ impl<'a> Unit<'a> {
         }
     }
 
-    /// A function of so many doubles, returning one.
-    fn signature(&self, arity: usize) -> cranelift_codegen::ir::Signature {
+    /// A function of so many doubles, handing back what its body will be.
+    fn signature(
+        &self,
+        formation: &'a Element,
+    ) -> Result<cranelift_codegen::ir::Signature, String> {
         let mut signature = self.module.make_signature();
-        for _ in 0..arity {
+        for _ in 0..voids(formation).len() {
             signature.params.push(AbiParam::new(types::F64));
         }
-        signature.returns.push(AbiParam::new(types::F64));
         signature
+            .returns
+            .push(AbiParam::new(self.gives(formation)?));
+        Ok(signature)
     }
 
     /// Declare and define a function under a name of its own.
@@ -620,6 +868,15 @@ fn raw(element: &Element) -> Option<Vec<u8>> {
         .iter()
         .find(|child| attribute(child, "as") == Some("α0"))
         .and_then(raw)
+}
+
+/// Whether a formation is one to hold rather than to apply: it declares no
+/// voids to fill and no `φ` to stand for it, so all it is is its attributes.
+fn plain(element: &Element) -> bool {
+    attribute(element, "base").is_none()
+        && !element.children.is_empty()
+        && voids(element).is_empty()
+        && child(element, "φ").is_none()
 }
 
 /// The voids a formation declares, in the order arguments fill them.

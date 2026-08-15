@@ -29,8 +29,21 @@ unevaluated.
 of them are named in the compiler. They are written in EO on top of `gt`, `plus`
 and `times`, so those four instructions were enough for all three to fall out.
 
-A value is either a number, an unboxed double with a truth being 1.0 or 0.0, or
-bytes, which are where they start and how many of them there are. Nothing is
+A value is a number, an unboxed double with a truth being 1.0 or 0.0; or bytes,
+which are where they start and how many of them there are; or an object, which
+is a pointer.
+
+An object only appears where the resolver could not say what an expression
+would be. It carries a shape, laid down once in the object file, saying what
+its attributes are called, and a slot for each. Asking one for an attribute is
+`eo_dispatch`, a search of that shape while the program runs -- the lookup this
+whole compiler exists to avoid, kept for the quarter of dispatch that cannot be
+worked out ahead of time.
+
+Which form an expression takes has to be settled before any code is built,
+since a function may call the function it is the body of. So the same question
+`emit` answers is answered once beforehand on the tree alone, and that decides
+whether a function hands back a double or a pointer. Nothing is
 allocated while the program runs: a string literal is laid down in the object
 file once and pointed at. So bytes go into a system call and answer `.size`,
 while a function still carries only numbers, and everything outside that is

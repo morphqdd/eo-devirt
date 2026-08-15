@@ -93,6 +93,20 @@ fn reports_a_result_of_zero() {
     assert_eq!(run("p8"), (String::new(), "0.0".to_string()));
 }
 
+/// An object picked while the program runs. `p12` declares two unrelated
+/// objects, chooses between them on a condition, and asks the winner for an
+/// attribute. Which one it is cannot be known until it runs, so the name has
+/// to be looked up then.
+///
+/// ```text
+/// $ eoc dataize p12
+/// [0x3FF00000-00000000-] = 1.0
+/// ```
+#[test]
+fn dispatches_on_an_object_chosen_while_running() {
+    assert_eq!(run("p12").1, "1.0");
+}
+
 /// Compile one fixture together with the runtime objects it leans on, link it
 /// against the runtime library, run it, and hand back what the program wrote
 /// and what it dataized to, which the runtime reports separately.
