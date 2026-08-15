@@ -182,6 +182,27 @@ fn named(shape: *const u64, count: usize, name: u64) -> Option<usize> {
     (0..count).find(|slot| unsafe { *shape.add(1 + slot) } == name)
 }
 
+/// Whether two runs of bytes are the same.
+///
+/// # Safety
+///
+/// Called from generated code, which passes bytes it laid down or made.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eo_bytes_eq(
+    left: *const u8,
+    left_size: usize,
+    right: *const u8,
+    right_size: usize,
+) -> f64 {
+    if left_size != right_size {
+        return 0.0;
+    }
+    let same = unsafe {
+        std::slice::from_raw_parts(left, left_size) == std::slice::from_raw_parts(right, right_size)
+    };
+    f64::from(u8::from(same))
+}
+
 /// Stop, saying what was asked for and could not be done.
 fn refuse(what: &str) -> ! {
     let mut out = std::io::stderr().lock();

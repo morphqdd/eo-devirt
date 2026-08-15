@@ -321,8 +321,8 @@ impl<'a> Unit<'a> {
         if frame.depth > DEPTH {
             return Err("the expression nests deeper than this compiles".to_string());
         }
-        if let Some(text) = &element.text {
-            return Ok(Val::Number(builder.ins().f64const(number(text)?)));
+        if element.text.is_some() {
+            return self.datum(builder, element);
         }
         let base = attribute(element, "base").ok_or("a formation where a value was wanted")?;
         if base == "∅" {
@@ -394,9 +394,29 @@ impl<'a> Unit<'a> {
         if wanted == "as-bytes" || wanted == "code" {
             return Ok(got);
         }
-        if let Val::Bytes { size, .. } = got {
+        if let Val::Bytes { at, size } = got {
             if wanted == "size" {
                 return Ok(Val::Number(builder.ins().fcvt_from_sint(types::F64, size)));
+            }
+            if wanted == "eq" {
+                let other = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
+                let Val::Bytes {
+                    at: other_at,
+                    size: other_size,
+                } = other
+                else {
+                    return Err("bytes compared with something that is not bytes".to_string());
+                };
+                let same = self.calling(
+                    "eo_bytes_eq",
+                    &[types::I64, types::I64, types::I64, types::I64],
+                    Some(types::F64),
+                )?;
+                let callee = self.module.declare_func_in_func(same, builder.func);
+                let call = builder
+                    .ins()
+                    .call(callee, &[at, size, other_at, other_size]);
+                return Ok(Val::Number(builder.inst_results(call)[0]));
             }
             return Err(format!("bytes have no {wanted}"));
         }
@@ -463,7 +483,8 @@ impl<'a> Unit<'a> {
             return Ok(self.bool(target, 0));
         }
         // The receiver went through a value, so the name at the end of its
-        // chain is an attribute of `number`, which is where to ask instead.
+        // chain is an attribute of `number` or of `bytes`, which is where to
+        // ask instead.
         let chain = if base.starts_with('.') {
             element
                 .children
@@ -477,13 +498,16 @@ impl<'a> Unit<'a> {
         let Some(last) = chain.rsplit('.').next() else {
             return Ok(false);
         };
-        match self
-            .resolver
-            .lands(None, &format!("Φ.number.{last}"), Where::Nowhere, 0)
-        {
-            Where::At(target) => Ok(self.bool(target, 0)),
-            _ => Ok(false),
+        for held in ["Φ.number", "Φ.bytes"] {
+            if let Where::At(target) =
+                self.resolver
+                    .lands(None, &format!("{held}.{last}"), Where::Nowhere, 0)
+                && self.bool(target, 0)
+            {
+                return Ok(true);
+            }
         }
+        Ok(false)
     }
 
     /// Whether a formation is a truth, or stands for one.
@@ -913,6 +937,31 @@ impl<'a> Unit<'a> {
         Ok(Val::Number(builder.inst_results(call)[0]))
     }
 
+    /// Build a datum, which is bytes written out in hex.
+    ///
+    /// Eight of them are a number, that being how EO writes one, and the
+    /// compiler holds it unboxed. Any other length is bytes, laid down once
+    /// and pointed at, since nothing else could be meant by them.
+    fn datum(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        element: &'a Element,
+    ) -> Result<Val, String> {
+        let raw = raw(element).ok_or("a datum that is not bytes")?;
+        if let Ok(eight) = <[u8; 8]>::try_from(raw.as_slice()) {
+            return Ok(Val::Number(
+                builder.ins().f64const(f64::from_be_bytes(eight)),
+            ));
+        }
+        let size = raw.len() as i64;
+        let id = self.lay(raw)?;
+        let word = self.module.declare_data_in_func(id, builder.func);
+        Ok(Val::Bytes {
+            at: builder.ins().symbol_value(types::I64, word),
+            size: builder.ins().iconst(types::I64, size),
+        })
+    }
+
     /// Build a string literal, which is bytes laid down once and pointed at.
     fn letters(
         &mut self,
@@ -998,7 +1047,13 @@ impl<'a> Unit<'a> {
                     attribute(formation, "loc").unwrap_or("something")
                 ));
             };
-            handed.push(self.emit(builder, arg, frame.inner(), env)?.number()?);
+            let value = self.emit(builder, arg, frame.inner(), env)?;
+            handed.push(value.number().map_err(|_| {
+                format!(
+                    "{} is handed bytes, and a function carries only numbers",
+                    attribute(formation, "loc").unwrap_or("something")
+                )
+            })?);
         }
         let id = self.declare(formation)?;
         let callee = self.module.declare_func_in_func(id, builder.func);
@@ -1235,18 +1290,4 @@ fn argument(element: &Element, slot: usize) -> Result<&Element, String> {
         .iter()
         .find(|child| attribute(child, "as") == Some(&format!("α{slot}")))
         .ok_or_else(|| format!("no argument α{slot}"))
-}
-
-/// Read a datum written as big-endian bytes, `40-00-00-00-00-00-00-00`.
-fn number(text: &str) -> Result<f64, String> {
-    let bytes: Result<Vec<u8>, String> = text
-        .trim()
-        .split('-')
-        .map(|byte| u8::from_str_radix(byte, 16).map_err(|e| e.to_string()))
-        .collect();
-    let bytes = bytes?;
-    let eight: [u8; 8] = bytes
-        .try_into()
-        .map_err(|_| format!("{text} is not eight bytes"))?;
-    Ok(f64::from_be_bytes(eight))
 }
