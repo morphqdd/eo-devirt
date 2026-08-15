@@ -62,6 +62,10 @@ fn passes(loc: &str) -> bool {
     matches!(loc, "Φ.dataized")
 }
 
+/// How many arguments a system call may be handed, which the runtime agrees
+/// on.
+const ARGUMENTS: usize = 4;
+
 /// One atom that is a single instruction.
 enum Op {
     Add,
@@ -95,6 +99,7 @@ impl Program {
             ),
             signed: HashMap::new(),
             pending: Vec::new(),
+            spelt: 0,
             frontend,
         };
         unit.entry(body, object)?;
@@ -112,6 +117,7 @@ struct Unit<'a> {
     module: ObjectModule,
     signed: HashMap<usize, FuncId>,
     pending: Vec<&'a Element>,
+    spelt: usize,
     frontend: cranelift_codegen::isa::TargetFrontendConfig,
 }
 
@@ -227,6 +233,9 @@ impl<'a> Unit<'a> {
                 let right = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
                 return Ok(self.operate(builder, op, left, right));
             }
+            if attribute(target, "loc") == Some("Φ.posix") {
+                return self.syscall(builder, element, frame, env);
+            }
             if attribute(target, "loc").is_some_and(passes) {
                 return self.emit(builder, argument(element, 0)?, frame.inner(), env);
             }
@@ -256,7 +265,7 @@ impl<'a> Unit<'a> {
             .rsplit('.')
             .next()
             .ok_or_else(|| format!("{base} names nothing"))?;
-        if wanted == "as-bytes" {
+        if wanted == "as-bytes" || wanted == "code" {
             return self.receiver(builder, element, base, frame, env);
         }
         let Where::At(target) =
@@ -327,6 +336,96 @@ impl<'a> Unit<'a> {
         builder.seal_block(join);
         builder.switch_to_block(join);
         Ok(builder.block_params(join)[0])
+    }
+
+    /// Build a system call.
+    ///
+    /// The name is a literal at every call site the runtime library has, so it
+    /// is read here and laid down as a string for the runtime to match, rather
+    /// than being built and read back while the program runs. The arguments
+    /// arrive as a tuple, which is a chain of `tail`, `head` and `length`, so
+    /// walking the tails and taking the heads gives them back in order.
+    fn syscall(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        element: &'a Element,
+        frame: Frame<'a>,
+        env: &mut Env,
+    ) -> Result<Value, String> {
+        let named = text(argument(element, 0)?).ok_or("a system call with no name to read")?;
+        let mut handed = Vec::new();
+        self.gather(builder, argument(element, 1)?, frame, env, &mut handed)?;
+        if handed.len() > ARGUMENTS {
+            return Err(format!("{named} is handed more arguments than this passes"));
+        }
+        let mut signature = self.module.make_signature();
+        signature.params.push(AbiParam::new(types::I64));
+        signature.params.push(AbiParam::new(types::I64));
+        for _ in 0..ARGUMENTS {
+            signature.params.push(AbiParam::new(types::F64));
+        }
+        signature.returns.push(AbiParam::new(types::F64));
+        let id = self
+            .module
+            .declare_function("eo_posix", Linkage::Import, &signature)
+            .map_err(|e| e.to_string())?;
+        let spelling = self.spell(&named)?;
+        let word = self.module.declare_data_in_func(spelling, builder.func);
+        let mut passed = vec![
+            builder.ins().symbol_value(types::I64, word),
+            builder.ins().iconst(types::I64, handed.len() as i64),
+        ];
+        let nothing = builder.ins().f64const(0.0);
+        for slot in 0..ARGUMENTS {
+            passed.push(handed.get(slot).copied().unwrap_or(nothing));
+        }
+        let callee = self.module.declare_func_in_func(id, builder.func);
+        let call = builder.ins().call(callee, &passed);
+        Ok(builder.inst_results(call)[0])
+    }
+
+    /// Lay a name down where the runtime can read it.
+    fn spell(&mut self, named: &str) -> Result<cranelift_module::DataId, String> {
+        let mut letters = named.as_bytes().to_vec();
+        letters.push(0);
+        let id = self
+            .module
+            .declare_data(
+                &format!("eo_name_{}_{}", named.len(), self.signed.len() + self.spelt),
+                Linkage::Local,
+                false,
+                false,
+            )
+            .map_err(|e| e.to_string())?;
+        self.spelt += 1;
+        let mut description = cranelift_module::DataDescription::new();
+        description.define(letters.into_boxed_slice());
+        self.module
+            .define_data(id, &description)
+            .map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
+    /// Walk a tuple, building each of its items in turn.
+    fn gather(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        element: &'a Element,
+        frame: Frame<'a>,
+        env: &mut Env,
+        into: &mut Vec<Value>,
+    ) -> Result<(), String> {
+        let base = attribute(element, "base").unwrap_or_default();
+        if base.ends_with("tuple.empty") {
+            return Ok(());
+        }
+        if !base.ends_with("tuple") {
+            return Err(format!("{base} is not a tuple of arguments"));
+        }
+        self.gather(builder, argument(element, 0)?, frame, env, into)?;
+        let item = self.emit(builder, argument(element, 1)?, frame.inner(), env)?;
+        into.push(item);
+        Ok(())
     }
 
     /// Build a call to the function standing for a formation.
@@ -422,6 +521,23 @@ impl<'a> Unit<'a> {
             .define_function(id, context)
             .map_err(|e| e.to_string())
     }
+}
+
+/// The datum an expression wraps, however many wrappers deep, read as text.
+fn text(element: &Element) -> Option<String> {
+    if let Some(hex) = &element.text {
+        let letters: Result<Vec<u8>, _> = hex
+            .trim()
+            .split('-')
+            .map(|byte| u8::from_str_radix(byte, 16))
+            .collect();
+        return String::from_utf8(letters.ok()?).ok();
+    }
+    element
+        .children
+        .iter()
+        .find(|child| attribute(child, "as") == Some("α0"))
+        .and_then(text)
 }
 
 /// The voids a formation declares, in the order arguments fill them.

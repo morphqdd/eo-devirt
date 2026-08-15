@@ -59,7 +59,13 @@ It reaches the operating system through libc rather than raw syscalls. Windows
 has no stable syscall numbering and needs the DLL route regardless, so the
 second path would have to exist anyway, and libc is one path for both.
 
-So far it holds one function, which writes out a dataized number.
+So far it writes out a dataized number, and makes a system call.
+
+The name of a system call is a literal at every call site the runtime library
+has, so the compiler reads it and lays it down as a string for the runtime to
+match on. The Java runtime instead dataizes the name while the program runs and
+looks it up then. Folding it is the same idea the rest of the compiler is built
+on, arriving at the edge of the operating system.
 
 ## Where the dispatch goes
 
