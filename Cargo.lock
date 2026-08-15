@@ -212,6 +212,9 @@ dependencies = [
 [[package]]
 name = "eo-runtime"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "equivalent"
@@ -273,6 +276,12 @@ dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
 ]
+
+[[package]]
+name = "libc"
+version = "0.2.189"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libm"

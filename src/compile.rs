@@ -16,7 +16,30 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 
 /// What every filled void holds.
-type Env = HashMap<usize, Value>;
+type Env = HashMap<usize, Val>;
+
+/// One value a compiled program holds.
+///
+/// Numbers are unboxed doubles. Bytes are where they start and how many of
+/// them there are, which is what a system call wants and what a literal can be
+/// laid down as. Nothing here is allocated while the program runs.
+#[derive(Clone, Copy)]
+enum Val {
+    /// A number, a truth being 1.0 or 0.0.
+    Number(Value),
+    /// Bytes, as where they start and how many of them there are.
+    Bytes { at: Value, size: Value },
+}
+
+impl Val {
+    /// The number this is, when it is one.
+    fn number(self) -> Result<Value, String> {
+        match self {
+            Self::Number(value) => Ok(value),
+            Self::Bytes { .. } => Err("bytes where a number was wanted".to_string()),
+        }
+    }
+}
 
 /// Where in the program one expression is being built.
 #[derive(Clone, Copy)]
@@ -153,7 +176,8 @@ impl<'a> Unit<'a> {
             &mut env,
         )?;
         let callee = self.module.declare_func_in_func(printer, builder.func);
-        builder.ins().call(callee, &[value]);
+        let shown = value.number()?;
+        builder.ins().call(callee, &[shown]);
         let fine = builder.ins().iconst(types::I32, 0);
         builder.ins().return_(&[fine]);
         builder.finalize(self.frontend);
@@ -178,7 +202,10 @@ impl<'a> Unit<'a> {
         builder.seal_block(entry);
         let mut env = Env::new();
         for (slot, void) in voids.iter().enumerate() {
-            env.insert(address(void), builder.block_params(entry)[slot]);
+            env.insert(
+                address(void),
+                Val::Number(builder.block_params(entry)[slot]),
+            );
         }
         let body = child(formation, "φ").ok_or("a formation with no φ was applied")?;
         let value = self.emit(
@@ -190,7 +217,7 @@ impl<'a> Unit<'a> {
             },
             &mut env,
         )?;
-        builder.ins().return_(&[value]);
+        builder.ins().return_(&[value.number()?]);
         builder.finalize(self.frontend);
         self.module
             .define_function(id, &mut context)
@@ -207,12 +234,12 @@ impl<'a> Unit<'a> {
         element: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
-    ) -> Result<Value, String> {
+    ) -> Result<Val, String> {
         if frame.depth > DEPTH {
             return Err("the expression nests deeper than this compiles".to_string());
         }
         if let Some(text) = &element.text {
-            return Ok(builder.ins().f64const(number(text)?));
+            return Ok(Val::Number(builder.ins().f64const(number(text)?)));
         }
         let base = attribute(element, "base").ok_or("a formation where a value was wanted")?;
         if base == "∅" {
@@ -229,9 +256,16 @@ impl<'a> Unit<'a> {
         }
         if let Where::At(target) = self.resolver.lands(Some(element), base, frame.scope, 0) {
             if let Some(op) = attribute(target, "loc").and_then(instruction) {
-                let left = self.receiver(builder, element, base, frame, env)?;
-                let right = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
-                return Ok(self.operate(builder, op, left, right));
+                let left = self
+                    .receiver(builder, element, base, frame, env)?
+                    .number()?;
+                let right = self
+                    .emit(builder, argument(element, 0)?, frame.inner(), env)?
+                    .number()?;
+                return Ok(Val::Number(self.operate(builder, op, left, right)));
+            }
+            if attribute(target, "loc") == Some("Φ.string") {
+                return self.letters(builder, element);
             }
             if attribute(target, "loc") == Some("Φ.posix") {
                 return self.syscall(builder, element, frame, env);
@@ -260,7 +294,7 @@ impl<'a> Unit<'a> {
         base: &str,
         frame: Frame<'a>,
         env: &mut Env,
-    ) -> Result<Value, String> {
+    ) -> Result<Val, String> {
         let wanted = base
             .rsplit('.')
             .next()
@@ -268,19 +302,25 @@ impl<'a> Unit<'a> {
         if wanted == "as-bytes" || wanted == "code" {
             return self.receiver(builder, element, base, frame, env);
         }
+        if wanted == "size"
+            && let Val::Bytes { size, .. } = self.receiver(builder, element, base, frame, env)?
+        {
+            return Ok(Val::Number(builder.ins().fcvt_from_sint(types::F64, size)));
+        }
         let Where::At(target) =
             self.resolver
                 .lands(None, &format!("Φ.number.{wanted}"), Where::Nowhere, 0)
         else {
             return Err(format!("{base} does not land anywhere known"));
         };
-        let value = self.receiver(builder, element, base, frame, env)?;
-        if wanted == "as-bytes" {
-            return Ok(value);
-        }
+        let value = self
+            .receiver(builder, element, base, frame, env)?
+            .number()?;
         if let Some(op) = attribute(target, "loc").and_then(instruction) {
-            let right = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
-            return Ok(self.operate(builder, op, value, right));
+            let right = self
+                .emit(builder, argument(element, 0)?, frame.inner(), env)?
+                .number()?;
+            return Ok(Val::Number(self.operate(builder, op, value, right)));
         }
         self.call(builder, element, target, &[value], frame, env)
     }
@@ -314,8 +354,10 @@ impl<'a> Unit<'a> {
         base: &str,
         frame: Frame<'a>,
         env: &mut Env,
-    ) -> Result<Value, String> {
-        let asked = self.receiver(builder, element, base, frame, env)?;
+    ) -> Result<Val, String> {
+        let asked = self
+            .receiver(builder, element, base, frame, env)?
+            .number()?;
         let zero = builder.ins().f64const(0.0);
         let flag = builder.ins().fcmp(FloatCC::NotEqual, asked, zero);
         let (yes, no, join) = (
@@ -327,15 +369,19 @@ impl<'a> Unit<'a> {
         builder.ins().brif(flag, yes, &[], no, &[]);
         builder.switch_to_block(yes);
         builder.seal_block(yes);
-        let taken = self.emit(builder, argument(element, 0)?, frame.inner(), env)?;
+        let taken = self
+            .emit(builder, argument(element, 0)?, frame.inner(), env)?
+            .number()?;
         builder.ins().jump(join, &[BlockArg::Value(taken)]);
         builder.switch_to_block(no);
         builder.seal_block(no);
-        let other = self.emit(builder, argument(element, 1)?, frame.inner(), env)?;
+        let other = self
+            .emit(builder, argument(element, 1)?, frame.inner(), env)?
+            .number()?;
         builder.ins().jump(join, &[BlockArg::Value(other)]);
         builder.seal_block(join);
         builder.switch_to_block(join);
-        Ok(builder.block_params(join)[0])
+        Ok(Val::Number(builder.block_params(join)[0]))
     }
 
     /// Build a system call.
@@ -351,7 +397,7 @@ impl<'a> Unit<'a> {
         element: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
-    ) -> Result<Value, String> {
+    ) -> Result<Val, String> {
         let named = text(argument(element, 0)?).ok_or("a system call with no name to read")?;
         let mut handed = Vec::new();
         self.gather(builder, argument(element, 1)?, frame, env, &mut handed)?;
@@ -362,7 +408,7 @@ impl<'a> Unit<'a> {
         signature.params.push(AbiParam::new(types::I64));
         signature.params.push(AbiParam::new(types::I64));
         for _ in 0..ARGUMENTS {
-            signature.params.push(AbiParam::new(types::F64));
+            signature.params.push(AbiParam::new(types::I64));
         }
         signature.returns.push(AbiParam::new(types::F64));
         let id = self
@@ -375,23 +421,48 @@ impl<'a> Unit<'a> {
             builder.ins().symbol_value(types::I64, word),
             builder.ins().iconst(types::I64, handed.len() as i64),
         ];
-        let nothing = builder.ins().f64const(0.0);
+        let nothing = builder.ins().iconst(types::I64, 0);
         for slot in 0..ARGUMENTS {
-            passed.push(handed.get(slot).copied().unwrap_or(nothing));
+            passed.push(match handed.get(slot) {
+                Some(Val::Number(value)) => builder.ins().fcvt_to_sint(types::I64, *value),
+                Some(Val::Bytes { at, .. }) => *at,
+                None => nothing,
+            });
         }
         let callee = self.module.declare_func_in_func(id, builder.func);
         let call = builder.ins().call(callee, &passed);
-        Ok(builder.inst_results(call)[0])
+        Ok(Val::Number(builder.inst_results(call)[0]))
     }
 
-    /// Lay a name down where the runtime can read it.
+    /// Build a string literal, which is bytes laid down once and pointed at.
+    fn letters(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        element: &'a Element,
+    ) -> Result<Val, String> {
+        let raw = raw(argument(element, 0)?).ok_or("a string with nothing to read")?;
+        let size = raw.len() as i64;
+        let id = self.lay(raw)?;
+        let word = self.module.declare_data_in_func(id, builder.func);
+        Ok(Val::Bytes {
+            at: builder.ins().symbol_value(types::I64, word),
+            size: builder.ins().iconst(types::I64, size),
+        })
+    }
+
+    /// Lay a name down where the runtime can read it, ended as C expects.
     fn spell(&mut self, named: &str) -> Result<cranelift_module::DataId, String> {
         let mut letters = named.as_bytes().to_vec();
         letters.push(0);
+        self.lay(letters)
+    }
+
+    /// Lay bytes down in the object file.
+    fn lay(&mut self, letters: Vec<u8>) -> Result<cranelift_module::DataId, String> {
         let id = self
             .module
             .declare_data(
-                &format!("eo_name_{}_{}", named.len(), self.signed.len() + self.spelt),
+                &format!("eo_letters_{}", self.spelt),
                 Linkage::Local,
                 false,
                 false,
@@ -413,7 +484,7 @@ impl<'a> Unit<'a> {
         element: &'a Element,
         frame: Frame<'a>,
         env: &mut Env,
-        into: &mut Vec<Value>,
+        into: &mut Vec<Val>,
     ) -> Result<(), String> {
         let base = attribute(element, "base").unwrap_or_default();
         if base.ends_with("tuple.empty") {
@@ -437,15 +508,18 @@ impl<'a> Unit<'a> {
         prefix: &[Value],
         frame: Frame<'a>,
         env: &mut Env,
-    ) -> Result<Value, String> {
+    ) -> Result<Val, String> {
         let mut handed = prefix.to_vec();
         for slot in 0..voids(formation).len().saturating_sub(prefix.len()) {
-            handed.push(self.emit(builder, argument(element, slot)?, frame.inner(), env)?);
+            handed.push(
+                self.emit(builder, argument(element, slot)?, frame.inner(), env)?
+                    .number()?,
+            );
         }
         let id = self.declare(formation)?;
         let callee = self.module.declare_func_in_func(id, builder.func);
         let call = builder.ins().call(callee, &handed);
-        Ok(builder.inst_results(call)[0])
+        Ok(Val::Number(builder.inst_results(call)[0]))
     }
 
     /// The function standing for a formation, declared and queued for a body
@@ -478,7 +552,7 @@ impl<'a> Unit<'a> {
         base: &str,
         frame: Frame<'a>,
         env: &mut Env,
-    ) -> Result<Value, String> {
+    ) -> Result<Val, String> {
         if base.starts_with('.') {
             let given = element
                 .children
@@ -525,19 +599,24 @@ impl<'a> Unit<'a> {
 
 /// The datum an expression wraps, however many wrappers deep, read as text.
 fn text(element: &Element) -> Option<String> {
+    String::from_utf8(raw(element)?).ok()
+}
+
+/// The datum an expression wraps, however many wrappers deep.
+fn raw(element: &Element) -> Option<Vec<u8>> {
     if let Some(hex) = &element.text {
-        let letters: Result<Vec<u8>, _> = hex
+        return hex
             .trim()
             .split('-')
             .map(|byte| u8::from_str_radix(byte, 16))
-            .collect();
-        return String::from_utf8(letters.ok()?).ok();
+            .collect::<Result<Vec<u8>, _>>()
+            .ok();
     }
     element
         .children
         .iter()
         .find(|child| attribute(child, "as") == Some("α0"))
-        .and_then(text)
+        .and_then(raw)
 }
 
 /// The voids a formation declares, in the order arguments fill them.
@@ -593,7 +672,7 @@ fn local<'a>(base: &str, scope: Where<'a>) -> Option<&'a Element> {
 }
 
 /// What a void was bound to.
-fn held(void: &Element, env: &Env) -> Result<Value, String> {
+fn held(void: &Element, env: &Env) -> Result<Val, String> {
     env.get(&address(void))
         .copied()
         .ok_or_else(|| "a void nothing was bound to".to_string())
